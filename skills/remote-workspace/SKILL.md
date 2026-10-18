@@ -60,6 +60,7 @@ rsk exec devbox -- "cd services/api && go build ./..."
 | List a directory | `rsk ls <host> [path] [-l]` |
 | Find listening ports | `rsk ports <host>` |
 | List / stop background jobs | `rsk ps <host>`, `rsk kill <host> <job-id>` |
+| Run on many hosts | `rsk fanout --hosts a,b -- <cmd>` (or `--all`) |
 | Sessions, daemon, uptime | `rsk status <host> [--json]` |
 | Expose a remote port locally | `rsk forward <host> 8080:localhost:3000` |
 | Let the server reach a local service | `rsk forward <host> 8080:localhost:3000 --remote` |

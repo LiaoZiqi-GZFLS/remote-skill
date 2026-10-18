@@ -135,6 +135,17 @@ rsk kill <host> <job-id>       # terminate a job and its children
 `rsk get` streams the archive straight into the extractor, so memory use does
 not grow with the download size.
 
+## rsk fanout
+
+```
+rsk fanout --hosts dev1,dev2 -- <cmd>     # or --all
+rsk fanout --all --concurrency 8 --timeout 60s --json -- <cmd>
+```
+
+Runs one command on several configured hosts in parallel, prints a `== host
+[ok|failed] rc=... ==` block per host, and exits 1 if any host failed. Each
+host uses its own default session and stored authentication.
+
 ## Connection reuse (experimental)
 
 `--broker` (or `RSK_BROKER=1`) keeps one local SSH connection per host and

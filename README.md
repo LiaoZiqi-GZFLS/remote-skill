@@ -86,6 +86,7 @@ rsk down devbox
 | `rsk sh <host>` | 把会话接到本终端（`Ctrl-]` 断开） |
 | `rsk put/get` | 上传/下载文件或目录（tar 流，保留权限/软链/空目录） |
 | `rsk sync <host> <local> <remote>` | 增量同步（按大小+mtime 比对，`--exclude/--delete/--dry-run`） |
+| `rsk fanout [--all\|--hosts a,b] -- <cmd>` | 多主机并行执行，按主机汇总输出与退出码 |
 | `rsk ls <host> [path]` | 列目录 |
 | `rsk ports <host>` | 列出服务器监听端口，并给出可复制的转发命令 |
 | `rsk ps <host>` / `rsk kill <host> <job-id>` | 列出 / 停止 `--detach` 后台作业 |

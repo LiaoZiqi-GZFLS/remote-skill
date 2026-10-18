@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
@@ -40,6 +41,7 @@ usage:
   rsk ls <host> [path]                   list a remote directory
   rsk ports <host> [--json]              list listening TCP ports on the server
   rsk sync <host> <local> <remote>       incremental upload (--exclude, --delete, --dry-run)
+  rsk fanout [--all | --hosts a,b] -- <cmd>   run a command on several hosts in parallel
   rsk ps <host>                          list background jobs (--detach)
   rsk kill <host> <job-id>               stop a background job
   rsk logs <host> [flags]                show recent session output
@@ -86,6 +88,8 @@ func main() {
 		err = cmdPorts(args)
 	case "sync":
 		err = cmdSync(args)
+	case "fanout":
+		err = cmdFanout(args)
 	case "ps", "jobs":
 		err = cmdPs(args)
 	case "kill":
@@ -911,6 +915,137 @@ func cmdPorts(args []string) error {
 			hint = fmt.Sprintf("rsk forward %s %d:localhost:%d", c.Host.Name, p.Port, p.Port)
 		}
 		fmt.Printf("%-22s %-6d %s\n", p.Address, p.Port, hint)
+	}
+	return nil
+}
+
+// fanoutResult is one host's outcome in a parallel run.
+type fanoutResult struct {
+	Host       string `json:"host"`
+	RC         int    `json:"rc"`
+	Output     string `json:"stdout"`
+	Error      string `json:"error,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
+// cmdFanout runs one command on many configured hosts in parallel.
+func cmdFanout(args []string) error {
+	cf := newCmdFlags("fanout")
+	hostsFlag := cf.fs.String("hosts", "", "comma separated host names")
+	all := cf.fs.Bool("all", false, "run on every configured host")
+	conc := cf.fs.Int("concurrency", 4, "how many hosts to run at once")
+	timeout := cf.fs.Duration("timeout", 120*time.Second, "per-host command timeout")
+	session := cf.fs.String("session", "", "session name to use on each host")
+	asJSON := cf.fs.Bool("json", false, "machine readable output")
+	var envs multiFlag
+	cf.fs.Var(&envs, "env", "environment KEY=VALUE for each host (repeatable)")
+	pos, err := cf.parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) == 0 {
+		return fmt.Errorf("usage: rsk fanout [--all | --hosts a,b] -- <cmd>")
+	}
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	var names []string
+	switch {
+	case *all:
+		names = cfg.Names()
+	case *hostsFlag != "":
+		for _, n := range strings.Split(*hostsFlag, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+	default:
+		return fmt.Errorf("choose hosts with --all or --hosts a,b")
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("no hosts selected")
+	}
+	cmd := strings.Join(pos, " ")
+	results := make([]fanoutResult, len(names))
+	sem := make(chan struct{}, *conc)
+	var wg sync.WaitGroup
+	for i, name := range names {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			start := time.Now()
+			res := fanoutResult{Host: name}
+			h, ok := cfg.Get(name)
+			if !ok {
+				res.Error = "unknown host"
+				res.RC = -1
+				results[i] = res
+				return
+			}
+			c := client.NewClient(h, cfg)
+			c.SSH.BatchAll = true
+			applyTransport(c, "")
+			defer c.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), *timeout+30*time.Second)
+			defer cancel()
+			if err := c.Connect(ctx, client.ConnectOptions{Quiet: true, Session: *session}); err != nil {
+				res.Error = err.Error()
+				res.RC = -1
+				res.DurationMS = time.Since(start).Milliseconds()
+				results[i] = res
+				return
+			}
+			var out strings.Builder
+			r, err := c.Exec(ctx, daemon.ExecRequest{
+				Session:   c.SessionName(*session),
+				Cmd:       cmd,
+				TimeoutMS: timeout.Milliseconds(),
+				WaitMS:    30000,
+				Env:       envMap(envs),
+			}, &out)
+			res.Output = out.String()
+			res.DurationMS = time.Since(start).Milliseconds()
+			if err != nil {
+				res.Error = err.Error()
+				res.RC = -1
+			} else {
+				res.RC = r.RC
+			}
+			results[i] = res
+		}(i, name)
+	}
+	wg.Wait()
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(results); err != nil {
+			return err
+		}
+	} else {
+		for _, r := range results {
+			state := "ok"
+			if r.RC != 0 {
+				state = "failed"
+			}
+			fmt.Printf("== %s [%s] rc=%d %.0fms ==\n", r.Host, state, r.RC, float64(r.DurationMS))
+			if r.Output != "" {
+				fmt.Print(r.Output)
+				if !strings.HasSuffix(r.Output, "\n") {
+					fmt.Println()
+				}
+			}
+			if r.Error != "" {
+				fmt.Printf("error: %s\n", r.Error)
+			}
+		}
+	}
+	for _, r := range results {
+		if r.RC != 0 {
+			return exitCode(1)
+		}
 	}
 	return nil
 }
