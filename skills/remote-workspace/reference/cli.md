@@ -98,6 +98,7 @@ rsk forward devbox 8080:3000                # local 8080 -> remote localhost:300
 rsk forward devbox 8080:db.internal:5432    # explicit remote host
 rsk forward devbox 0.0.0.0:8080:localhost:3000 --bind 127.0.0.1
 rsk forward devbox 8080:localhost:3000 --detach     # run in the background
+rsk forward devbox --socks 1080                     # local SOCKS5 proxy (ssh -D)
 rsk forward devbox 8080:localhost:3000 --remote     # ssh -R: the server listens
 ```
 

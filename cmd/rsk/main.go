@@ -12,10 +12,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1021,20 +1023,37 @@ func cmdForward(args []string) error {
 	remote := cf.fs.Bool("remote", false, "reverse forward: the server listens, the local side serves (ssh -R)")
 	cf.fs.BoolVar(remote, "R", false, "reverse forward: the server listens, the local side serves (ssh -R)")
 	detach := cf.fs.Bool("detach", false, "run the forward in the background")
+	socks := cf.fs.Bool("socks", false, "run a local SOCKS5 proxy through the server (ssh -D)")
 	pos, err := cf.parse(args)
 	if err != nil {
 		return err
 	}
-	if len(pos) != 2 {
-		return fmt.Errorf("usage: rsk forward <host> <[bind:]port[:host:port]> [--remote]")
+	if len(pos) < 1 || len(pos) > 2 {
+		return fmt.Errorf("usage: rsk forward <host> <[bind:]port[:host:port]> [--remote] | rsk forward <host> [addr] --socks")
 	}
-	parse := client.ParseForward
-	if *remote {
-		parse = client.ParseReverse
-	}
-	spec, err := parse(pos[1], *bind)
-	if err != nil {
-		return err
+	var spec client.ForwardSpec
+	socksAddr := ""
+	if *socks {
+		socksAddr = net.JoinHostPort(*bind, "1080")
+		if len(pos) == 2 {
+			if _, portErr := strconv.Atoi(pos[1]); portErr == nil {
+				socksAddr = net.JoinHostPort(*bind, pos[1])
+			} else {
+				socksAddr = pos[1]
+			}
+		}
+	} else {
+		if len(pos) != 2 {
+			return fmt.Errorf("usage: rsk forward <host> <[bind:]port[:host:port]> [--remote]")
+		}
+		parse := client.ParseForward
+		if *remote {
+			parse = client.ParseReverse
+		}
+		spec, err = parse(pos[1], *bind)
+		if err != nil {
+			return err
+		}
 	}
 	if *detach && os.Getenv("RSK_FORWARD_CHILD") == "" {
 		return spawnDetachedForward()
@@ -1059,7 +1078,9 @@ func cmdForward(args []string) error {
 			}
 			continue
 		}
-		if spec.Reverse {
+		if *socks {
+			err = client.SOCKS(ctx, c, socksAddr)
+		} else if spec.Reverse {
 			fmt.Printf("forwarding %s:%d on %s -> local %s (ssh -R)\n", spec.BindHost, spec.BindPort, c.Host.Name, spec.Target())
 			err = client.ReverseForward(ctx, c, spec)
 		} else {

@@ -93,6 +93,7 @@ rsk down devbox
 | `rsk forward <host> <spec>` | 本地端口转发到服务器侧目标 |
 | `rsk forward <host> <spec> --detach` | 后台转发；断线或守护进程重启后自动重连 |
 | `rsk forward <host> <spec> --remote` | 反向转发：服务器监听，连回本机服务（`ssh -R`） |
+| `rsk forward <host> --socks [port]` | 本地 SOCKS5 代理，流量从服务器侧拨号（`ssh -D`） |
 | `rsk down <host>` | 停止守护进程，**会话继续运行** |
 | `rsk down <host> --kill-sessions` | 连会话一起停止（`--session NAME` 只停一个） |
 | `rsk down <host> --purge` | 停止守护进程与会话，并清理远端状态 |
