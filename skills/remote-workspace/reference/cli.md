@@ -43,7 +43,8 @@ code. `--` is optional but recommended so command flags are not parsed locally.
 --json             print {rc, session, exec_id, cwd, duration_ms, timed_out, stdout}
 --detach           start in the background, print job id, pid and log path
 --stdin            feed local stdin to the command through a heredoc
---tty              run the command on a dedicated remote pty (sudo, top, editors)
+--tty              run the command on a dedicated remote pty (sudo, top, editors;
+                   unix ptys, and Windows via ConPTY)
 ```
 
 Timeout semantics: SIGINT goes to the foreground job only. If the job refuses

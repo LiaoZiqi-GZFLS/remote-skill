@@ -172,8 +172,9 @@ rsk logout devbox           # 删除已保存的密码
 
 ## 限制与取舍
 
-- Windows 远端是「虚拟会话」：无 pty（`rsk sh` 不可用，`exec`/`logs`/传文件/转发可用），
-  每条命令启动一个 PowerShell 进程（约 200ms，`--no-profile` 可加速），
+- Windows 远端默认是「虚拟会话」：`rsk sh` 不可用（`exec`/`logs`/传文件/转发可用）；
+  `rsk exec --tty` 会通过 Windows ConPTY 分配真 pty。每条普通命令仍启动一个
+  PowerShell 进程（约 200ms，`--no-profile` 可加速），
   `cd` 与 `$env:X` 通过快照跨命令保留
 - 会话是 pty 语义：stdout/stderr 合并，可能出现颜色转义（与真实终端一致）
 - 一个会话同时只跑一条命令；并行请用 `--session`

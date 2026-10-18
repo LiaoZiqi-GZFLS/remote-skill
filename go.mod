@@ -3,6 +3,7 @@ module remote-skill
 go 1.24.0
 
 require (
+	github.com/UserExistsError/conpty v0.1.4
 	github.com/creack/pty v1.1.24
 	golang.org/x/term v0.29.0
 )

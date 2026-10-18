@@ -101,9 +101,9 @@ rsk exec devbox -- "cd services/api && go build ./..."
 10. **Session flags are per call.** `--session`, `--env`, `--shell`, `--inline`
     affect only the current invocation; `rsk up` is what stores them as the
     host's defaults.
-11. **Windows remotes work as virtual sessions**: `exec`, transfers, logs and
-    forwarding work; `rsk sh` does not (no pty), and each command costs a
-    PowerShell start, so pass `--no-profile` when speed matters.
+11. **Windows remotes**: `exec`, transfers, logs and forwarding work; plain
+    commands run one PowerShell process each (pass `--no-profile` for speed).
+    `rsk sh` is unix-only, but `rsk exec --tty` works on Windows through ConPTY.
 12. **Password-only hosts**: never ask the user to paste a password into chat.
     Run `rsk login <host>` yourself if a terminal is available, or tell the
     user to run it once. After that `rsk` uses plink automatically; without a

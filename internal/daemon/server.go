@@ -736,21 +736,24 @@ func (c *conn) handleExec(req *request, env *proto.Envelope) {
 // handleExecTTY runs one command on a dedicated pty (ssh -t semantics), which
 // lets interactive tools like sudo or top work. It does not touch the
 // persistent session's shell, but starts in its working directory.
+// TTYParams describe a one-shot pty command.
+type TTYParams struct {
+	Session   string `json:"session"`
+	Cmd       string `json:"cmd"`
+	Cwd       string `json:"cwd"`
+	TimeoutMS int64  `json:"timeout_ms"`
+	Rows      uint16 `json:"rows"`
+	Cols      uint16 `json:"cols"`
+}
+
 func (c *conn) handleExecTTY(req *request, env *proto.Envelope) {
-	var p struct {
-		Session   string `json:"session"`
-		Cmd       string `json:"cmd"`
-		Cwd       string `json:"cwd"`
-		TimeoutMS int64  `json:"timeout_ms"`
-		Rows      uint16 `json:"rows"`
-		Cols      uint16 `json:"cols"`
-	}
+	var p TTYParams
 	if err := env.DecodeParams(&p); err != nil {
 		c.fail(env.ID, proto.Errorf(proto.CodeBadRequest, "bad params: %v", err))
 		return
 	}
 	if !nativePTY {
-		c.fail(env.ID, proto.Errorf(proto.CodeBadRequest, "tty exec requires a unix pty server"))
+		c.handleExecTTYWindows(req, env, p)
 		return
 	}
 	if strings.TrimSpace(p.Cmd) == "" {
