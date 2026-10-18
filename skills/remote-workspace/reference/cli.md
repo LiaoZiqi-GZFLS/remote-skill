@@ -135,3 +135,17 @@ per-session keepers.
 * `rsk hosts` lists known hosts with platform, daemon version and last seen.
 * `rsk doctor <host>` runs ssh, upload, daemon and exec checks with timings.
 * `rsk version` prints client version and protocol API version.
+
+## rsk login / rsk logout
+
+```
+rsk login <host> [--password-stdin]   # store a DPAPI-encrypted password, verify it, pin the host key
+rsk logout <host>                     # forget it
+```
+
+Password-only hosts (no keys, no sudo) work through PuTTY's `plink`/`pscp`
+(must be installed): `rsk` selects plink automatically once a password is
+stored. `--password-stdin` reads the password from stdin for scripted setup;
+otherwise it is prompted with echo off. `--ask-pass` lets the system ssh prompt
+on a terminal instead (never used automatically, so agents never hang on a
+hidden prompt). `--ssh-impl ssh|plink` forces a transport.

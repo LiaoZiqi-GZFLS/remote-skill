@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"remote-skill/internal/client"
 	"remote-skill/internal/daemon"
 	"remote-skill/internal/proto"
@@ -37,6 +39,8 @@ usage:
   rsk forward <host> <spec>              forward a local port to the server
   rsk down <host> [flags]                stop the remote daemon
   rsk doctor <host>                      diagnose connectivity and versions
+  rsk login <host> [--password-stdin]    store a password (DPAPI) for password-only hosts
+  rsk logout <host>                      forget the stored password
   rsk hosts                              list configured hosts
   rsk version                            print the client version
 
@@ -80,6 +84,10 @@ func main() {
 		err = cmdDown(args)
 	case "doctor":
 		err = cmdDoctor(args)
+	case "login", "auth":
+		err = cmdLogin(args)
+	case "logout":
+		err = cmdLogout(args)
 	case "hosts":
 		err = cmdHosts(args)
 	case "version", "--version", "-v":
@@ -128,6 +136,8 @@ type hostFlags struct {
 	verbose   bool
 	quiet     bool
 	inline    bool
+	sshImpl   string
+	askPass   bool
 }
 
 func (hf *hostFlags) bind(fs *flag.FlagSet) {
@@ -147,6 +157,8 @@ func (hf *hostFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&hf.quiet, "quiet", false, "suppress progress output")
 	fs.BoolVar(&hf.quiet, "q", false, "suppress progress output")
 	fs.BoolVar(&hf.inline, "inline", false, "keep sessions inside the daemon (no persistence)")
+	fs.StringVar(&hf.sshImpl, "ssh-impl", "", "ssh client: ssh (default) or plink (password auth)")
+	fs.BoolVar(&hf.askPass, "ask-pass", false, "let ssh prompt on this terminal (passphrase / password)")
 }
 
 func (hf *hostFlags) apply(h *client.Host) {
@@ -312,7 +324,10 @@ func newClient(ctx context.Context, cfg *client.Config, hf *hostFlags, spec stri
 	c := client.NewClient(host, cfg)
 	c.Verbose = hf.verbose
 	c.SSH.Verbose = hf.verbose
-	c.SSH.BatchAll = !client.TTY(os.Stdin)
+	// Never let ssh sit on a password prompt nobody can answer: agents run
+	// without a terminal, and a hidden prompt would look like a hang.
+	c.SSH.BatchAll = !hf.askPass
+	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
 	c.EnvOverride = envMap(hf.env)
@@ -321,7 +336,7 @@ func newClient(ctx context.Context, cfg *client.Config, hf *hostFlags, spec stri
 		opts.Quiet = hf.quiet
 	}
 	if err := c.Connect(ctx, opts); err != nil {
-		return nil, err
+		return nil, authHint(err, c.Host)
 	}
 	return c, nil
 }
@@ -372,13 +387,14 @@ func cmdUp(args []string) error {
 	c := client.NewClient(host, cfg)
 	c.Verbose = hf.verbose
 	c.SSH.Verbose = hf.verbose
-	c.SSH.BatchAll = !client.TTY(os.Stdin)
+	c.SSH.BatchAll = !hf.askPass
+	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
 	c.EnvOverride = envMap(hf.env)
 	c.InlineOverride = hf.inline
 	if err := c.Connect(ctx, opts); err != nil {
-		return err
+		return authHint(err, c.Host)
 	}
 	defer c.Close()
 	// Open the session explicitly so `up` does what it says, and so a
@@ -1004,7 +1020,7 @@ func cmdDoctor(args []string) error {
 	fmt.Printf("host      %s -> %s\n", host.Name, host.Spec())
 	ssh := client.NewSSH(host)
 	ssh.Verbose = hf.verbose
-	ssh.BatchAll = !client.TTY(os.Stdin)
+	ssh.BatchAll = !hf.askPass
 	start := time.Now()
 	out, err := ssh.Output(ctx, "uname -sm; id -un; printf '%s\\n' \"$HOME\"")
 	if err != nil {
@@ -1023,6 +1039,7 @@ func cmdDoctor(args []string) error {
 	c := client.NewClient(host, cfg)
 	c.Verbose = verbose
 	c.SSH.Verbose = verbose
+	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
 	c.EnvOverride = envMap(hf.env)
@@ -1067,6 +1084,153 @@ func cmdHosts(_ []string) error {
 		h, _ := cfg.Get(name)
 		fmt.Printf("%-20s %s\n", name, h.Describe())
 	}
+	return nil
+}
+
+// applyTransport picks the ssh client: stored password (or RSK_PASSWORD)
+// selects plink, otherwise the system OpenSSH keeps its keys/config/agent.
+func applyTransport(c *client.Client, impl string) {
+	if impl == "" {
+		if !client.HasCredential(c.Host.Name) && os.Getenv("RSK_PASSWORD") == "" {
+			return
+		}
+		impl = "plink"
+	}
+	c.SSH.Impl = impl
+	if impl != "plink" {
+		return
+	}
+	c.SSH.HostKey = c.Host.HostKey
+	if pw, ok, err := client.LoadCredential(c.Host.Name); err == nil && ok {
+		c.SSH.Password = pw
+		return
+	}
+	c.SSH.Password = os.Getenv("RSK_PASSWORD")
+}
+
+// authHint makes the password-only case obvious instead of a bare ssh error.
+func authHint(err error, host *client.Host) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "no more authentication methods") ||
+		strings.Contains(msg, "host key verification failed") ||
+		strings.Contains(msg, "no supported authentication") ||
+		strings.Contains(msg, "access denied") {
+		return fmt.Errorf("%w\nhint: for password-only hosts run `rsk login %s` (stores the password and pins the host key); add --ask-pass only when you are at the terminal", err, host.Name)
+	}
+	return err
+}
+
+// cmdLogin stores a DPAPI-encrypted password and verifies it with plink.
+func cmdLogin(args []string) error {
+	cf := newCmdFlags("login")
+	var hf hostFlags
+	hf.bind(cf.fs)
+	fromStdin := cf.fs.Bool("password-stdin", false, "read the password from stdin instead of prompting")
+	pos, err := cf.parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("usage: rsk login <host> [--password-stdin]")
+	}
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	host, err := resolveHost(cfg, pos[0], &hf)
+	if err != nil {
+		return err
+	}
+	var pw string
+	if *fromStdin {
+		b, rerr := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+		if rerr != nil {
+			return rerr
+		}
+		pw = strings.TrimRight(string(b), "\r\n")
+	} else {
+		if !client.TTY(os.Stdin) {
+			return fmt.Errorf("no interactive terminal; pipe the password with --password-stdin")
+		}
+		fmt.Fprintf(os.Stderr, "password for %s: ", host.Spec())
+		b, rerr := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if rerr != nil {
+			return rerr
+		}
+		pw = string(b)
+	}
+	if pw == "" {
+		return fmt.Errorf("empty password")
+	}
+	if err := client.SaveCredential(host.Name, pw); err != nil {
+		return err
+	}
+
+	ssh := client.NewSSH(host)
+	ssh.Impl = "plink"
+	ssh.Password = pw
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	fp := ""
+	if fp, ferr := client.HostKeyFingerprint(host.Target, host.Port); ferr == nil {
+		host.HostKey = fp
+	} else if probed, perr := ssh.ProbeHostKey(ctx, 20*time.Second); perr == nil {
+		fp = probed
+		host.HostKey = fp
+	}
+	if fp != "" {
+		fmt.Fprintf(os.Stderr, "host key %s\n", fp)
+	}
+	ssh.HostKey = host.HostKey
+	out, err := ssh.Output(ctx, "echo rsk-auth-ok")
+	if err != nil || !strings.Contains(out, "rsk-auth-ok") {
+		_ = client.DeleteCredential(host.Name)
+		if err != nil {
+			return fmt.Errorf("password login failed: %w", err)
+		}
+		return fmt.Errorf("password login failed: unexpected output %q", out)
+	}
+	cfg.Put(host)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	fmt.Printf("saved password for %s (DPAPI encrypted); plink is used automatically\n", host.Name)
+	return nil
+}
+
+// cmdLogout forgets the stored password of a host.
+func cmdLogout(args []string) error {
+	cf := newCmdFlags("logout")
+	var hf hostFlags
+	hf.bind(cf.fs)
+	pos, err := cf.parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("usage: rsk logout <host>")
+	}
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	host, err := resolveHost(cfg, pos[0], &hf)
+	if err != nil {
+		return err
+	}
+	if !client.HasCredential(host.Name) {
+		fmt.Printf("no stored password for %s\n", host.Name)
+		return nil
+	}
+	if err := client.DeleteCredential(host.Name); err != nil {
+		return err
+	}
+	fmt.Printf("removed stored password for %s\n", host.Name)
 	return nil
 }
 

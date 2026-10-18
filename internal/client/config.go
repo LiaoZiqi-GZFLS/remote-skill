@@ -18,6 +18,7 @@ type Host struct {
 	User        string            `json:"user,omitempty"`
 	Port        int               `json:"port,omitempty"`
 	Identity    string            `json:"identity,omitempty"`
+	HostKey     string            `json:"host_key,omitempty"`
 	SSHArgs     []string          `json:"ssh_args,omitempty"`
 	Session     string            `json:"session,omitempty"`
 	Shell       string            `json:"shell,omitempty"`

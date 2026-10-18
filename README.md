@@ -139,6 +139,20 @@ pwsh install.ps1 -InstallSkill          # 复制到 $env:CODEX_HOME\skills\remot
 
 ## 安全说明
 
+**仅有密码登录的服务器**（无 sudo、不能写 authorized_keys）也能用：
+
+```bash
+rsk login devbox            # 交互输入一次密码（DPAPI 加密保存 + 固定服务器主机指纹）
+rsk up devbox               # 之后所有命令都走 plink，无需再输入
+rsk logout devbox           # 删除已保存的密码
+```
+
+实现上使用 PuTTY 的 `plink`/`pscp`（需安装 PuTTY），密码以 Windows DPAPI 用户密钥
+加密存放于 `~/.rsk/credentials/`，不写入配置文件；无凭据时 ssh 不会偷偷等待输入，
+而是快速失败并提示先 `rsk login`（需要人工输入时加 `--ask-pass`）。
+注意：plink 的 `-pw` 参数会出现在本机进程命令行里（同一用户可见）；每条命令仍需
+一次 plink 登录（约 2s），本地连接复用尚未实现。
+
 - 传输完全走你已有的 SSH（密钥、ssh-agent、ProxyJump、`~/.ssh/config`、2FA 都继续生效）
 - 远端守护进程**只监听 unix socket**（`~/.rsk/run/rskd.sock`，权限 0600，目录 0700），
   不开放任何网络端口；同一台机器上的其他用户无法访问

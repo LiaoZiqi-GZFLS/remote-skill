@@ -329,7 +329,10 @@ func (c *Client) uploadBinaryWindows(ctx context.Context, info *remoteInfo, data
 	tmp.Close()
 
 	remoteFile := strings.ReplaceAll(remotePath, `\`, "/")
-	scp := exec.CommandContext(ctx, "scp", c.SSH.SCPArgs(tmp.Name(), remoteFile)...)
+	scp, err := c.SSH.SCPCommand(ctx, tmp.Name(), remoteFile)
+	if err != nil {
+		return err
+	}
 	var errBuf bytes.Buffer
 	scp.Stderr = &errBuf
 	if err := scp.Run(); err != nil {
@@ -349,7 +352,10 @@ func (c *Client) uploadBinaryWindows(ctx context.Context, info *remoteInfo, data
 		return err
 	}
 	tmpScript.Close()
-	scp = exec.CommandContext(ctx, "scp", c.SSH.SCPArgs(tmpScript.Name(), strings.ReplaceAll(scriptPath, `\`, "/"))...)
+	scp, err = c.SSH.SCPCommand(ctx, tmpScript.Name(), strings.ReplaceAll(scriptPath, `\`, "/"))
+	if err != nil {
+		return err
+	}
 	errBuf.Reset()
 	scp.Stderr = &errBuf
 	if err := scp.Run(); err != nil {

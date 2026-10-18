@@ -99,6 +99,10 @@ rsk exec devbox -- "cd services/api && go build ./..."
 11. **Windows remotes work as virtual sessions**: `exec`, transfers, logs and
     forwarding work; `rsk sh` does not (no pty), and each command costs a
     PowerShell start, so pass `--no-profile` when speed matters.
+12. **Password-only hosts**: never ask the user to paste a password into chat.
+    Run `rsk login <host>` yourself if a terminal is available, or tell the
+    user to run it once. After that `rsk` uses plink automatically; without a
+    stored password it fails fast with a hint instead of prompting.
 
 ## Recipes
 
