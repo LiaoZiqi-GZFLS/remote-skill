@@ -75,6 +75,13 @@ type Client struct {
 	ShellOverride   string
 	EnvOverride     map[string]string
 	InlineOverride  bool
+	// NoBroker disables the local connection multiplexer for this run.
+	NoBroker bool
+	// UseBroker enables the (experimental) local connection multiplexer.
+	UseBroker bool
+	// forceDirect / noReadLoop are set by the broker process itself.
+	forceDirect bool
+	noReadLoop  bool
 
 	conn *proto.Conn
 	proc *exec.Cmd
@@ -119,6 +126,10 @@ func (c *Client) Connect(ctx context.Context, opts ConnectOptions) error {
 			fmt.Fprintf(c.Logw, "restarting the daemon on %s (client and server builds differ)\n", c.Host.Name)
 		}
 		c.cleanup()
+		// Do not let the local broker replay the old daemon: stop it and
+		// restart the daemon over a direct connection for this run.
+		StopBroker(c.Host)
+		c.forceDirect = true
 		opts.Restart = true
 		if err = c.dial(ctx, opts); err != nil {
 			return err
@@ -151,6 +162,25 @@ func (c *Client) Connect(ctx context.Context, opts ConnectOptions) error {
 }
 
 func (c *Client) dial(ctx context.Context, opts ConnectOptions) error {
+	if conn, nc, ok := c.dialBroker(ctx); ok {
+		c.conn = conn
+		herr := c.handshake(ctx, opts.Restart)
+		if herr == nil {
+			herr = brokerPing(conn, nc, 3*time.Second)
+		}
+		if herr != nil {
+			nc.Close()
+			// The broker may be shutting down (e.g. right after `rsk down`).
+			// Drop it and use a direct connection for this run.
+			c.logf("broker unhealthy (%v); falling back to a direct connection", herr)
+			StopBroker(c.Host)
+			c.conn = nil
+			c.forceDirect = true
+		} else {
+			go c.readLoop()
+			return nil
+		}
+	}
 	flags := []string{
 		c.Host.RemoteBin, "bridge",
 		"--socket", c.Host.SocketPath(),
@@ -194,6 +224,17 @@ func (c *Client) dial(ctx context.Context, opts ConnectOptions) error {
 	c.proc = proc
 	c.conn = proto.NewConn(stdout, stdin)
 
+	if err := c.handshake(ctx, opts.Restart); err != nil {
+		return err
+	}
+	if !c.noReadLoop {
+		go c.readLoop()
+	}
+	return nil
+}
+
+// handshake greets the daemon (or the local broker) and caches host info.
+func (c *Client) handshake(ctx context.Context, allowStale bool) error {
 	hello := map[string]any{
 		"version": version.Version,
 		"api":     proto.APIVersion,
@@ -221,7 +262,7 @@ func (c *Client) dial(ctx context.Context, opts ConnectOptions) error {
 		c.Info = &info
 		// An empty BinarySHA means a daemon started before upgrade detection
 		// existed, so it is outdated by definition.
-		if want := c.assetSHA(); want != "" && info.BinarySHA != want && !opts.Restart {
+		if want := c.assetSHA(); want != "" && info.BinarySHA != want && !allowStale {
 			return fmt.Errorf("%w (daemon %s, client %s)", errDaemonStale, shortSHA(info.BinarySHA), shortSHA(want))
 		}
 	case proto.TypeBye, proto.TypeRes:
@@ -235,7 +276,6 @@ func (c *Client) dial(ctx context.Context, opts ConnectOptions) error {
 	default:
 		return fmt.Errorf("unexpected handshake reply %q", welcome.Type)
 	}
-	go c.readLoop()
 	return nil
 }
 

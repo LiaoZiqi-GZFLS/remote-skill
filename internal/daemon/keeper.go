@@ -117,7 +117,7 @@ func (m *KeeperManager) ensure(name string, opts *SessionOptions, create bool) (
 	m.mu.Lock()
 	h := m.handles[name]
 	m.mu.Unlock()
-	if h != nil && !h.isClosed() {
+	if h != nil && !h.isClosed() && h.socketExists() {
 		return h, nil
 	}
 	if adopted, err := m.adopt(name); err == nil {

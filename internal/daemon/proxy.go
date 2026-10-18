@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,6 +71,16 @@ func (h *keeperHandle) isClosed() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.closed
+}
+
+// socketExists reports whether the keeper is still listening. A keeper that
+// just ended its session removes its socket right before exiting.
+func (h *keeperHandle) socketExists() bool {
+	if h.socket == "" {
+		return true
+	}
+	_, err := os.Stat(h.socket)
+	return err == nil
 }
 
 // call performs a request/response exchange with the keeper, bypassing the

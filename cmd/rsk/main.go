@@ -99,6 +99,8 @@ func main() {
 		err = cmdLogin(args)
 	case "logout":
 		err = cmdLogout(args)
+	case "__broker":
+		err = cmdBroker(args)
 	case "hosts":
 		err = cmdHosts(args)
 	case "version", "--version", "-v":
@@ -149,6 +151,8 @@ type hostFlags struct {
 	inline    bool
 	sshImpl   string
 	askPass   bool
+	noBroker  bool
+	useBroker bool
 }
 
 func (hf *hostFlags) bind(fs *flag.FlagSet) {
@@ -170,6 +174,8 @@ func (hf *hostFlags) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&hf.inline, "inline", false, "keep sessions inside the daemon (no persistence)")
 	fs.StringVar(&hf.sshImpl, "ssh-impl", "", "ssh client: ssh (default) or plink (password auth)")
 	fs.BoolVar(&hf.askPass, "ask-pass", false, "let ssh prompt on this terminal (passphrase / password)")
+	fs.BoolVar(&hf.noBroker, "no-broker", false, "open a dedicated ssh connection instead of reusing the local broker")
+	fs.BoolVar(&hf.useBroker, "broker", false, "reuse one local ssh connection for many commands (experimental)")
 }
 
 func (hf *hostFlags) apply(h *client.Host) {
@@ -338,6 +344,8 @@ func newClient(ctx context.Context, cfg *client.Config, hf *hostFlags, spec stri
 	// Never let ssh sit on a password prompt nobody can answer: agents run
 	// without a terminal, and a hidden prompt would look like a hang.
 	c.SSH.BatchAll = !hf.askPass
+	c.NoBroker = hf.noBroker
+	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
@@ -399,6 +407,8 @@ func cmdUp(args []string) error {
 	c.Verbose = hf.verbose
 	c.SSH.Verbose = hf.verbose
 	c.SSH.BatchAll = !hf.askPass
+	c.NoBroker = hf.noBroker
+	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
@@ -556,7 +566,7 @@ func runDetached(ctx context.Context, c *client.Client, session, command, cwd st
 		inner = "cd " + client.Quote(cwd) + " && " + inner
 	}
 	script := fmt.Sprintf(
-		"mkdir -p ~/.rsk/jobs && nohup bash -lc %s >~/.rsk/jobs/%s.log 2>&1 </dev/null & __rsk_job=$!; "+
+		"mkdir -p ~/.rsk/jobs; nohup bash -lc %s >~/.rsk/jobs/%s.log 2>&1 </dev/null & __rsk_job=$!; "+
 			"printf 'id=%%s\\npid=%%s\\nlog=%%s\\nstarted=%%s\\n' %s \"$__rsk_job\" %s \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\" >~/.rsk/jobs/%s.meta; "+
 			"echo RSK_PID=$__rsk_job; echo RSK_LOG=~/.rsk/jobs/%s.log",
 		client.Quote(inner), id, client.Quote(id), client.Quote("~/.rsk/jobs/"+id+".log"), id, id)
@@ -1149,6 +1159,8 @@ func cmdDown(args []string) error {
 	if err := c.Shutdown(ctx, *force, kill); err != nil {
 		return err
 	}
+	waitForDaemonGone(ctx, c)
+	client.StopBroker(c.Host)
 	if kill {
 		// The daemon acknowledges before the keepers are gone: wait until the
 		// session sockets really disappear so the report is truthful.
@@ -1175,6 +1187,27 @@ func cmdDown(args []string) error {
 		}
 	}
 	return nil
+}
+
+// waitForDaemonGone blocks until the daemon removes its socket, so the next
+// command cannot be served by a daemon that is halfway through shutting down.
+func waitForDaemonGone(ctx context.Context, c *client.Client) {
+	socket := c.Host.SocketPath()
+	script := fmt.Sprintf("test -S %s && echo alive || echo gone", client.Quote(socket))
+	if c.Host.RemoteOS == "windows" {
+		script = fmt.Sprintf(`cmd /c "if exist %q (echo alive) else (echo gone)"`, socket)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return
+		}
+		out, err := c.SSH.Output(ctx, script)
+		if err == nil && strings.Contains(out, "gone") {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // waitForSessionsGone polls the remote session socket directory.
@@ -1255,6 +1288,8 @@ func cmdDoctor(args []string) error {
 	c := client.NewClient(host, cfg)
 	c.Verbose = verbose
 	c.SSH.Verbose = verbose
+	c.NoBroker = hf.noBroker
+	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
@@ -1446,8 +1481,45 @@ func cmdLogout(args []string) error {
 	if err := client.DeleteCredential(host.Name); err != nil {
 		return err
 	}
+	client.StopBroker(host)
 	fmt.Printf("removed stored password for %s\n", host.Name)
 	return nil
+}
+
+// cmdBroker runs the local connection multiplexer (hidden subcommand).
+func cmdBroker(args []string) error {
+	cf := newCmdFlags("__broker")
+	var hf hostFlags
+	hf.bind(cf.fs)
+	socket := cf.fs.String("socket", "", "broker socket")
+	hostName := cf.fs.String("host", "", "configured host name")
+	if _, err := cf.parse(args); err != nil {
+		return err
+	}
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	host, ok := cfg.Get(*hostName)
+	if !ok {
+		return fmt.Errorf("unknown host %q", *hostName)
+	}
+	c := client.NewClient(host, cfg)
+	c.SSH.Impl = hf.sshImpl
+	if c.SSH.Impl == "" && client.HasCredential(host.Name) {
+		c.SSH.Impl = "plink"
+	}
+	if pw, ok, _ := client.LoadCredential(host.Name); ok {
+		c.SSH.Password = pw
+	} else {
+		c.SSH.Password = os.Getenv("RSK_PASSWORD")
+	}
+	c.SSH.HostKey = host.HostKey
+	c.SSH.BatchAll = true
+	c.Verbose = hf.verbose
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	return c.ServeBroker(ctx, *socket)
 }
 
 func humanBytes(n int64) string {

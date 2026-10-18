@@ -450,6 +450,17 @@ func runSessionKeeper(o keeperOptions) error {
 	}
 	_ = os.Chmod(o.Socket, 0o600)
 	metaPath := strings.TrimSuffix(o.Socket, ".sock") + ".json"
+	socketStamp := time.Time{}
+	if st, serr := os.Stat(o.Socket); serr == nil {
+		socketStamp = st.ModTime()
+	}
+	// A successor keeper may reuse the same socket path; only remove the file
+	// if it is still the one this process created.
+	removeOwnSocket := func() {
+		if st, serr := os.Stat(o.Socket); serr == nil && st.ModTime().Equal(socketStamp) {
+			_ = os.Remove(o.Socket)
+		}
+	}
 	meta := daemon.KeeperMeta{
 		Name:      o.Name,
 		PID:       os.Getpid(),
@@ -465,8 +476,10 @@ func runSessionKeeper(o keeperOptions) error {
 	}
 	defer func() {
 		l.Close()
-		_ = os.Remove(o.Socket)
-		_ = os.Remove(metaPath)
+		removeOwnSocket()
+		if meta, merr := daemon.ReadKeeperMeta(metaPath); merr == nil && meta.PID == os.Getpid() {
+			_ = os.Remove(metaPath)
+		}
 	}()
 
 	srv := daemon.New(daemon.Options{
@@ -487,7 +500,11 @@ func runSessionKeeper(o keeperOptions) error {
 		case <-srv.ShutdownCh():
 		case <-sess.Done():
 			logger.Printf("keeper %s: session ended", o.Name)
-			time.Sleep(150 * time.Millisecond)
+			// Stop advertising the dead session at once so the daemon respawns
+			// a keeper, but keep the process alive briefly to flush the final
+			// response of the command that ended the shell.
+			_ = l.Close()
+			time.Sleep(200 * time.Millisecond)
 		}
 		srv.Shutdown(true)
 		_ = l.Close()

@@ -123,6 +123,14 @@ rsk kill <host> <job-id>       # terminate a job and its children
 `rsk get` streams the archive straight into the extractor, so memory use does
 not grow with the download size.
 
+## Connection reuse (experimental)
+
+`--broker` (or `RSK_BROKER=1`) keeps one local SSH connection and multiplexes
+short-lived `rsk` invocations over it: measured round trips drop from ~1.9s to
+~0.13s. It is opt-in because a daemon restart or a shell that exits mid-command
+can still race the multiplexer; omit the flag for the most predictable
+behaviour, or use `--no-broker` to force a dedicated connection.
+
 ## rsk down <host>
 
 Stops the daemon. Sessions are keepers with their own processes, so they keep
