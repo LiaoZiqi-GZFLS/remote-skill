@@ -77,6 +77,8 @@ type Client struct {
 	InlineOverride  bool
 	// NoBroker disables the local connection multiplexer for this run.
 	NoBroker bool
+	// UseBroker enables the (experimental) local connection multiplexer.
+	UseBroker bool
 	// forceDirect / noReadLoop are set by the broker process itself.
 	forceDirect bool
 	noReadLoop  bool
@@ -222,8 +224,16 @@ func (c *Client) dial(ctx context.Context, opts ConnectOptions) error {
 	c.proc = proc
 	c.conn = proto.NewConn(stdout, stdin)
 
-	if err := c.handshake(ctx, opts.Restart); err != nil {
-		return err
+	// A wedged daemon must not hang the client forever.
+	hsDone := make(chan error, 1)
+	go func() { hsDone <- c.handshake(ctx, opts.Restart) }()
+	select {
+	case herr := <-hsDone:
+		if herr != nil {
+			return herr
+		}
+	case <-time.After(20 * time.Second):
+		return fmt.Errorf("remote daemon did not answer the handshake (hint: `rsk up %s --restart`)", c.Host.Name)
 	}
 	if !c.noReadLoop {
 		go c.readLoop()

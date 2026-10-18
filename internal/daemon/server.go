@@ -637,6 +637,10 @@ func (c *conn) handleRequest(env *proto.Envelope) {
 			c.handleFileGet(req, env)
 		case proto.MethodFileList:
 			c.handleFileList(env)
+		case proto.MethodFileManifest:
+			c.handleFileManifest(env)
+		case proto.MethodFileRemove:
+			c.handleFileRemove(env)
 		case proto.MethodTunnelOpen:
 			c.handleTunnel(req, env)
 		case proto.MethodTunnelListen:
@@ -813,6 +817,96 @@ func (c *conn) handleFileList(env *proto.Envelope) {
 		})
 	}
 	c.respond(env.ID, map[string]any{"path": dir, "entries": out, "count": len(out)})
+}
+
+// ManifestEntry describes one path for incremental sync.
+type ManifestEntry struct {
+	Path  string    `json:"path"`
+	Size  int64     `json:"size"`
+	Mtime time.Time `json:"mtime"`
+	Dir   bool      `json:"dir"`
+}
+
+func (c *conn) handleFileManifest(env *proto.Envelope) {
+	var p struct {
+		Session string `json:"session"`
+		Path    string `json:"path"`
+	}
+	if err := env.DecodeParams(&p); err != nil {
+		c.fail(env.ID, proto.Errorf(proto.CodeBadRequest, "bad params: %v", err))
+		return
+	}
+	root, err := c.srv.resolvePath(p.Session, p.Path)
+	if err != nil {
+		c.fail(env.ID, asProto(err))
+		return
+	}
+	entries := make([]ManifestEntry, 0, 256)
+	count := 0
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// unreadable entries are skipped rather than failing the sync
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		if count >= 200000 {
+			return filepath.SkipAll
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return nil
+		}
+		entries = append(entries, ManifestEntry{
+			Path:  filepath.ToSlash(rel),
+			Size:  info.Size(),
+			Mtime: info.ModTime(),
+			Dir:   d.IsDir(),
+		})
+		count++
+		return nil
+	})
+	if walkErr != nil {
+		c.fail(env.ID, asProto(walkErr))
+		return
+	}
+	c.respond(env.ID, map[string]any{"root": root, "entries": entries, "count": len(entries)})
+}
+
+func (c *conn) handleFileRemove(env *proto.Envelope) {
+	var p struct {
+		Session string   `json:"session"`
+		Root    string   `json:"root"`
+		Paths   []string `json:"paths"`
+	}
+	if err := env.DecodeParams(&p); err != nil {
+		c.fail(env.ID, proto.Errorf(proto.CodeBadRequest, "bad params: %v", err))
+		return
+	}
+	root, err := c.srv.resolvePath(p.Session, p.Root)
+	if err != nil {
+		c.fail(env.ID, asProto(err))
+		return
+	}
+	removed := 0
+	for _, rel := range p.Paths {
+		target, terr := transfer.SafeJoin(root, rel)
+		if terr != nil {
+			continue
+		}
+		if err := os.Remove(target); err == nil {
+			removed++
+		}
+	}
+	c.respond(env.ID, map[string]any{"removed": removed, "requested": len(p.Paths)})
 }
 
 func (c *conn) handleFilePut(req *request, env *proto.Envelope) {

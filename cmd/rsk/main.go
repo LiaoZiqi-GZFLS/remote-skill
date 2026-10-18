@@ -154,6 +154,7 @@ type hostFlags struct {
 	sshImpl   string
 	askPass   bool
 	noBroker  bool
+	useBroker bool
 }
 
 func (hf *hostFlags) bind(fs *flag.FlagSet) {
@@ -176,6 +177,7 @@ func (hf *hostFlags) bind(fs *flag.FlagSet) {
 	fs.StringVar(&hf.sshImpl, "ssh-impl", "", "ssh client: ssh (default) or plink (password auth)")
 	fs.BoolVar(&hf.askPass, "ask-pass", false, "let ssh prompt on this terminal (passphrase / password)")
 	fs.BoolVar(&hf.noBroker, "no-broker", false, "open a dedicated ssh connection instead of reusing the local broker")
+	fs.BoolVar(&hf.useBroker, "broker", false, "reuse one local ssh connection for many commands (experimental)")
 }
 
 func (hf *hostFlags) apply(h *client.Host) {
@@ -345,6 +347,7 @@ func newClient(ctx context.Context, cfg *client.Config, hf *hostFlags, spec stri
 	// without a terminal, and a hidden prompt would look like a hang.
 	c.SSH.BatchAll = !hf.askPass
 	c.NoBroker = hf.noBroker
+	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
@@ -407,6 +410,7 @@ func cmdUp(args []string) error {
 	c.SSH.Verbose = hf.verbose
 	c.SSH.BatchAll = !hf.askPass
 	c.NoBroker = hf.noBroker
+	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
@@ -908,6 +912,62 @@ func cmdPorts(args []string) error {
 	return nil
 }
 
+// cmdSync mirrors a local directory to the server, transferring only changes.
+func cmdSync(args []string) error {
+	cf := newCmdFlags("sync")
+	var hf hostFlags
+	hf.bind(cf.fs)
+	var exclude multiFlag
+	cf.fs.Var(&exclude, "exclude", "path or glob to skip (repeatable)")
+	del := cf.fs.Bool("delete", false, "delete remote files that no longer exist locally")
+	dry := cf.fs.Bool("dry-run", false, "report changes without transferring")
+	asJSON := cf.fs.Bool("json", false, "machine readable output")
+	pos, err := cf.parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 3 {
+		return fmt.Errorf("usage: rsk sync <host> <local> <remote> [--exclude GLOB] [--delete] [--dry-run]")
+	}
+	ctx, cancel := withSignalContext()
+	defer cancel()
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	c, err := newClient(ctx, cfg, &hf, pos[0], hf.connectOptions())
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	res, err := c.Sync(ctx, pos[1], pos[2], client.SyncOptions{
+		Exclude: exclude,
+		Delete:  *del,
+		DryRun:  *dry,
+	})
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+	verb := "synced"
+	if *dry {
+		verb = "would sync"
+	}
+	fmt.Printf("%s: +%d added, ~%d changed, -%d deleted, =%d unchanged (%s)\n",
+		verb, res.Added, res.Changed, res.Deleted, res.Unchanged, humanBytes(res.Bytes))
+	for _, f := range res.Files {
+		fmt.Printf("  upload  %s\n", f)
+	}
+	for _, f := range res.Removed {
+		fmt.Printf("  delete  %s\n", f)
+	}
+	return nil
+}
+
 func cmdLogs(args []string) error {
 	cf := newCmdFlags("logs")
 	var hf hostFlags
@@ -1306,6 +1366,7 @@ func cmdDoctor(args []string) error {
 	c.Verbose = verbose
 	c.SSH.Verbose = verbose
 	c.NoBroker = hf.noBroker
+	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell

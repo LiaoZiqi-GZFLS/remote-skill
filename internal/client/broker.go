@@ -111,6 +111,9 @@ func startBroker(h *Host, impl string) error {
 
 // dialBroker connects to (starting if needed) the broker of this host.
 func (c *Client) dialBroker(ctx context.Context) (*proto.Conn, net.Conn, bool) {
+	if !c.UseBroker && os.Getenv("RSK_BROKER") != "1" {
+		return nil, nil, false
+	}
 	if c.NoBroker || c.forceDirect || os.Getenv("RSK_NO_BROKER") != "" {
 		return nil, nil, false
 	}
@@ -215,7 +218,7 @@ func (c *Client) ServeBroker(ctx context.Context, socket string) error {
 		case <-ctx.Done():
 			return nil
 		case <-b.dead:
-			return errors.New("remote connection closed")
+			return nil
 		case <-idle.C:
 			b.mu.Lock()
 			n := len(b.sessions)
@@ -230,6 +233,9 @@ func (c *Client) ServeBroker(ctx context.Context, socket string) error {
 		}
 		nc, aerr := ln.Accept()
 		if aerr != nil {
+			if errors.Is(aerr, net.ErrClosed) {
+				return nil
+			}
 			if ne, ok := aerr.(net.Error); ok && ne.Timeout() {
 				continue
 			}

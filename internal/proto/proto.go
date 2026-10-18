@@ -62,6 +62,8 @@ const (
 	MethodFilePut           = "file.put"
 	MethodFileGet           = "file.get"
 	MethodFileList          = "file.list"
+	MethodFileManifest      = "file.manifest"
+	MethodFileRemove        = "file.remove"
 	MethodTunnelOpen        = "tunnel.open"
 	MethodTunnelListen      = "tunnel.listen"
 	MethodShutdown          = "daemon.shutdown"
