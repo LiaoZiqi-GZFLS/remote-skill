@@ -479,6 +479,7 @@ func cmdExec(args []string) error {
 		asJSON  = cf.fs.Bool("json", false, "print a JSON summary")
 		detach  = cf.fs.Bool("detach", false, "run in the background and return immediately")
 		stdin   = cf.fs.Bool("stdin", false, "feed local stdin to the command")
+		tty     = cf.fs.Bool("tty", false, "run on a remote pty (interactive programs)")
 	)
 	pos, err := cf.parse(args)
 	if err != nil {
@@ -503,6 +504,21 @@ func cmdExec(args []string) error {
 	session := c.SessionName(hf.session)
 	if *detach {
 		return runDetached(ctx, c, session, command, *cwd)
+	}
+	if *tty {
+		rc, terr := client.RunTTY(ctx, c, client.TTYOptions{
+			Session: session,
+			Cmd:     command,
+			Cwd:     *cwd,
+			Timeout: int(timeout.Milliseconds()),
+		}, os.Stdout)
+		if terr != nil {
+			if ctx.Err() != nil {
+				return exitCode(130)
+			}
+			return terr
+		}
+		return exitCode(rc)
 	}
 	if *stdin {
 		command = withStdinHeredoc(command)

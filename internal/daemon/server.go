@@ -8,12 +8,15 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/creack/pty"
 
 	"remote-skill/internal/proto"
 	"remote-skill/internal/transfer"
@@ -620,6 +623,8 @@ func (c *conn) handleRequest(env *proto.Envelope) {
 			c.handleSessionClose(env)
 		case proto.MethodExec:
 			c.handleExec(req, env)
+		case proto.MethodExecTTY:
+			c.handleExecTTY(req, env)
 		case proto.MethodSessionAttach:
 			c.handleAttach(req, env)
 		case proto.MethodSessionResize:
@@ -726,6 +731,155 @@ func (c *conn) handleExec(req *request, env *proto.Envelope) {
 		return
 	}
 	serveExec(c, sess, req, env)
+}
+
+// handleExecTTY runs one command on a dedicated pty (ssh -t semantics), which
+// lets interactive tools like sudo or top work. It does not touch the
+// persistent session's shell, but starts in its working directory.
+func (c *conn) handleExecTTY(req *request, env *proto.Envelope) {
+	var p struct {
+		Session   string `json:"session"`
+		Cmd       string `json:"cmd"`
+		Cwd       string `json:"cwd"`
+		TimeoutMS int64  `json:"timeout_ms"`
+		Rows      uint16 `json:"rows"`
+		Cols      uint16 `json:"cols"`
+	}
+	if err := env.DecodeParams(&p); err != nil {
+		c.fail(env.ID, proto.Errorf(proto.CodeBadRequest, "bad params: %v", err))
+		return
+	}
+	if !nativePTY {
+		c.fail(env.ID, proto.Errorf(proto.CodeBadRequest, "tty exec requires a unix pty server"))
+		return
+	}
+	if strings.TrimSpace(p.Cmd) == "" {
+		c.fail(env.ID, proto.Errorf(proto.CodeBadRequest, "command is empty"))
+		return
+	}
+	cwd := p.Cwd
+	if cwd == "" {
+		if info, ok := c.srv.sessionInfo(p.Session); ok {
+			cwd = info.Cwd
+		}
+	}
+	if cwd == "" {
+		cwd = os.Getenv("HOME")
+	}
+	if p.Rows == 0 {
+		p.Rows = 40
+	}
+	if p.Cols == 0 {
+		p.Cols = 120
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+	start := time.Now()
+	cmd := exec.Command(shell, "-l", "-c", p.Cmd)
+	cmd.Dir = dirOrEmpty(cwd)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "RSK=1")
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: p.Rows, Cols: p.Cols})
+	if err != nil {
+		c.fail(env.ID, proto.Errorf(proto.CodeIO, "start pty: %v", err))
+		return
+	}
+	defer ptmx.Close()
+	pid := cmd.Process.Pid
+	c.respond(env.ID, map[string]any{"pid": pid, "cwd": cwd, "started_at": start})
+	sink := &connSink{c: c, id: env.ID}
+	defer sink.detach()
+
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		buf := make([]byte, 32<<10)
+		for {
+			n, rerr := ptmx.Read(buf)
+			if n > 0 {
+				sink.publish(Event{Chan: proto.ChOut, Data: append([]byte(nil), buf[:n]...)})
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+
+	var timeoutCh <-chan time.Time
+	if p.TimeoutMS > 0 {
+		timer := time.NewTimer(time.Duration(p.TimeoutMS) * time.Millisecond)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+	timedOut := false
+	for {
+		select {
+		case <-c.closed:
+			_ = killGroup(pid, "TERM")
+			return
+		case <-req.closed:
+			_ = killGroup(pid, "TERM")
+			return
+		case <-timeoutCh:
+			timedOut = true
+			_ = killGroup(pid, "INT")
+			time.AfterFunc(3*time.Second, func() { _ = killGroup(pid, "KILL") })
+			timeoutCh = nil
+		case in := <-req.in:
+			switch in.Chan {
+			case proto.ChIn:
+				if _, werr := ptmx.Write(in.Data); werr != nil {
+					return
+				}
+			case proto.ChSignal:
+				sig, _ := in.Extra["sig"].(string)
+				if sig == "" {
+					sig = "INT"
+				}
+				_ = killGroup(pid, sig)
+			case proto.ChMeta:
+				rows, cols := extraUint16(in.Extra, "rows"), extraUint16(in.Extra, "cols")
+				if rows > 0 && cols > 0 {
+					_ = pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+					_ = killGroup(pid, "WINCH")
+				}
+			case proto.ChEof:
+				_, _ = ptmx.Write([]byte{0x04})
+			}
+		case <-readDone:
+			waitErr := cmd.Wait()
+			rc := 0
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				rc = exitErr.ExitCode()
+			} else if waitErr != nil {
+				rc = -1
+			}
+			c.respond(env.ID, &ExecResult{
+				ID:         env.ID,
+				Session:    p.Session,
+				Cmd:        p.Cmd,
+				RC:         rc,
+				TimedOut:   timedOut,
+				DurationMS: time.Since(start).Milliseconds(),
+				Cwd:        cwd,
+				StartedAt:  start,
+			})
+			// The final result must precede the terminal done event, otherwise
+			// the client stops at the empty done frame and reports rc 0.
+			sink.publish(Event{Chan: proto.ChDone})
+			return
+		}
+	}
+}
+
+// dirOrEmpty returns dir when it exists, otherwise "".
+func dirOrEmpty(dir string) string {
+	if st, err := os.Stat(dir); err == nil && st.IsDir() {
+		return dir
+	}
+	return ""
 }
 
 func (c *conn) handleAttach(req *request, env *proto.Envelope) {

@@ -59,6 +59,7 @@ const (
 	MethodSessionInfo       = "session.info"
 	MethodSessionScrollback = "session.scrollback"
 	MethodExec              = "exec"
+	MethodExecTTY           = "exec.tty"
 	MethodFilePut           = "file.put"
 	MethodFileGet           = "file.get"
 	MethodFileList          = "file.list"

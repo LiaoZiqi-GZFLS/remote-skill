@@ -51,6 +51,7 @@ rsk exec devbox -- "cd services/api && go build ./..."
 | Task | Command |
 |---|---|
 | Run a command in the session | `rsk exec <host> [flags] -- <cmd>` |
+| Interactive single command (sudo/top) | `rsk exec <host> --tty -- <cmd>` |
 | Run in the background, keep a log | `rsk exec <host> --detach -- <cmd>` |
 | Read recent terminal output | `rsk logs <host> --tail 20000` |
 | Follow output live | `rsk logs <host> --follow` |

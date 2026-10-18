@@ -102,7 +102,7 @@ rsk down devbox
 | `rsk hosts` / `rsk doctor` / `rsk version` | 主机列表 / 诊断 / 版本 |
 
 常用开关：`--session`、`--timeout`、`--wait`、`--cwd`、`--env`、`--json`、
-`--detach`、`--inline`、`--user`、`--port`、`--identity`、`--ssh-arg`、`--verbose`。
+`--detach`、`--tty`、`--inline`、`--user`、`--port`、`--identity`、`--ssh-arg`、`--verbose`。
 `--broker` 会复用一个本地常驻 SSH 连接：实测命令从 ~1.9s 降到 ~0.13s。
 目前为实验特性（守护进程/会话反复重启时仍有边缘竞态），默认关闭；
 需要时用 `rsk exec <host> --broker -- <cmd>` 或设置 `RSK_BROKER=1`。
