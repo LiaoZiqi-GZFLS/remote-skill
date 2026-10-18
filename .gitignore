@@ -1,0 +1,5 @@
+/dist/
+/.tmp/
+/internal/assets/bin/rskilld_*
+!/internal/assets/bin/README.md
+*.exe

@@ -1,0 +1,12 @@
+* text=auto
+
+# Sources and docs are stored with LF.
+*.go    text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf
+Makefile text eol=lf
+
+# Windows scripts keep CRLF.
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
