@@ -100,9 +100,8 @@ rsk down devbox
 
 常用开关：`--session`、`--timeout`、`--wait`、`--cwd`、`--env`、`--json`、
 `--detach`、`--inline`、`--user`、`--port`、`--identity`、`--ssh-arg`、`--verbose`。
-`--broker` 会复用一个本地常驻 SSH 连接（实测命令从 ~1.9s 降到 ~0.13s），
-目前标记为实验特性：守护进程重启或会话被 `exit` 终止的瞬间仍有小概率竞态，
-默认关闭；需要时用 `rsk exec <host> --broker -- <cmd>` 或设置 `RSK_BROKER=1`。
+默认会复用一个本地常驻 SSH 连接（broker）：实测命令从 ~1.9s 降到 ~0.13s。
+broker 不可用或异常时自动回退直连；需要强制独立连接时加 `--no-broker`。
 其中会话级开关（`--session`/`--env`/`--shell`/`--inline`）只作用于本次调用，
 只有 `rsk up` 会把它们写进主机配置作为默认值。
 完整说明见 [skills/remote-workspace/reference/cli.md](skills/remote-workspace/reference/cli.md)。

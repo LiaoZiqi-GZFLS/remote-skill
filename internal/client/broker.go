@@ -111,11 +111,6 @@ func startBroker(h *Host, impl string) error {
 
 // dialBroker connects to (starting if needed) the broker of this host.
 func (c *Client) dialBroker(ctx context.Context) (*proto.Conn, net.Conn, bool) {
-	// Connection reuse is opt-in: it trades the proven-slow path for a fast one
-	// and is still experimental around daemon restarts.
-	if !c.UseBroker && os.Getenv("RSK_BROKER") != "1" {
-		return nil, nil, false
-	}
 	if c.NoBroker || c.forceDirect || os.Getenv("RSK_NO_BROKER") != "" {
 		return nil, nil, false
 	}

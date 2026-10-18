@@ -152,7 +152,6 @@ type hostFlags struct {
 	sshImpl   string
 	askPass   bool
 	noBroker  bool
-	useBroker bool
 }
 
 func (hf *hostFlags) bind(fs *flag.FlagSet) {
@@ -175,7 +174,6 @@ func (hf *hostFlags) bind(fs *flag.FlagSet) {
 	fs.StringVar(&hf.sshImpl, "ssh-impl", "", "ssh client: ssh (default) or plink (password auth)")
 	fs.BoolVar(&hf.askPass, "ask-pass", false, "let ssh prompt on this terminal (passphrase / password)")
 	fs.BoolVar(&hf.noBroker, "no-broker", false, "open a dedicated ssh connection instead of reusing the local broker")
-	fs.BoolVar(&hf.useBroker, "broker", false, "reuse one local ssh connection for many commands (experimental)")
 }
 
 func (hf *hostFlags) apply(h *client.Host) {
@@ -345,7 +343,6 @@ func newClient(ctx context.Context, cfg *client.Config, hf *hostFlags, spec stri
 	// without a terminal, and a hidden prompt would look like a hang.
 	c.SSH.BatchAll = !hf.askPass
 	c.NoBroker = hf.noBroker
-	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
@@ -408,7 +405,6 @@ func cmdUp(args []string) error {
 	c.SSH.Verbose = hf.verbose
 	c.SSH.BatchAll = !hf.askPass
 	c.NoBroker = hf.noBroker
-	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell
@@ -1289,7 +1285,6 @@ func cmdDoctor(args []string) error {
 	c.Verbose = verbose
 	c.SSH.Verbose = verbose
 	c.NoBroker = hf.noBroker
-	c.UseBroker = hf.useBroker
 	applyTransport(c, hf.sshImpl)
 	c.SessionOverride = hf.session
 	c.ShellOverride = hf.shell

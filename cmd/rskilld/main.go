@@ -494,20 +494,31 @@ func runSessionKeeper(o keeperOptions) error {
 	sigCh := make(chan os.Signal, 1)
 	signalNotify(sigCh)
 	go func() {
-		select {
-		case sig := <-sigCh:
-			logger.Printf("keeper %s received %v, stopping", o.Name, sig)
-		case <-srv.ShutdownCh():
-		case <-sess.Done():
-			logger.Printf("keeper %s: session ended", o.Name)
-			// Stop advertising the dead session at once so the daemon respawns
-			// a keeper, but keep the process alive briefly to flush the final
-			// response of the command that ended the shell.
-			_ = l.Close()
-			time.Sleep(200 * time.Millisecond)
+		for {
+			select {
+			case sig := <-sigCh:
+				logger.Printf("keeper %s received %v, stopping", o.Name, sig)
+				srv.Shutdown(true)
+				_ = l.Close()
+				return
+			case <-srv.ShutdownCh():
+				_ = l.Close()
+				return
+			case <-sess.Done():
+				// A command like `exit` ended the shell. Restart it in place so
+				// the session name, socket and daemon handle stay valid.
+				logger.Printf("keeper %s: shell exited, restarting it", o.Name)
+				next, rerr := restartKeeperSession(o, logger)
+				if rerr != nil {
+					logger.Printf("keeper %s: restart failed: %v", o.Name, rerr)
+					srv.Shutdown(true)
+					_ = l.Close()
+					return
+				}
+				srv.ReplaceKeeper(next)
+				sess = next
+			}
 		}
-		srv.Shutdown(true)
-		_ = l.Close()
 	}()
 
 	err = srv.Serve(l)
@@ -525,6 +536,42 @@ func runSessionKeeper(o keeperOptions) error {
 }
 
 // selftest validates the pty session machinery without ssh.
+// restartKeeperSession recreates a shell in place after it exited, restoring
+// cwd, exported environment, scrollback and history from disk.
+func restartKeeperSession(o keeperOptions, logger *log.Logger) (*daemon.Session, error) {
+	home, _ := os.UserHomeDir()
+	var restore *daemon.SessionState
+	if state, ok := daemon.LoadSessionState(home, o.Name); ok {
+		restore = state
+		if state.Cwd != "" {
+			o.Cwd = state.Cwd
+		}
+		_ = daemon.WriteHistoryFile(home, o.Name, state.Commands)
+	}
+	sess, err := daemon.StartSession(daemon.SessionOptions{
+		Name:       o.Name,
+		Shell:      o.Shell,
+		Cwd:        o.Cwd,
+		Env:        o.Env,
+		Rows:       o.Rows,
+		Cols:       o.Cols,
+		NoProfile:  o.NoProfile,
+		Scrollback: o.Scrollback,
+		Logger:     logger,
+		Restore:    restore,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := sess.WaitReady(ctx); err != nil {
+		sess.Close()
+		return nil, err
+	}
+	return sess, nil
+}
+
 func selftest(socket, logPath, shell string, env map[string]string) error {
 	_ = socket
 	if err := stopDaemon(socket); err != nil {

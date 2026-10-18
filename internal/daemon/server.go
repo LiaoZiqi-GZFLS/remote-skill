@@ -362,6 +362,14 @@ func (s *Server) dropSession(name string) {
 	s.mu.Unlock()
 }
 
+// ReplaceKeeper swaps the session served by a keeper (used when its shell
+// exits and is restarted in place).
+func (s *Server) ReplaceKeeper(sess *Session) {
+	s.mu.Lock()
+	s.sessions[sess.Name()] = sess
+	s.mu.Unlock()
+}
+
 // sessionInfo reports cached session state without owning the session.
 func (s *Server) sessionInfo(name string) (SessionInfo, bool) {
 	if s.opts.Proxy != nil {

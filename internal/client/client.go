@@ -77,8 +77,6 @@ type Client struct {
 	InlineOverride  bool
 	// NoBroker disables the local connection multiplexer for this run.
 	NoBroker bool
-	// UseBroker enables the (experimental) local connection multiplexer.
-	UseBroker bool
 	// forceDirect / noReadLoop are set by the broker process itself.
 	forceDirect bool
 	noReadLoop  bool

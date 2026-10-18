@@ -200,6 +200,7 @@ func (h *keeperHandle) route(c *conn, env *proto.Envelope, stream bool) {
 		keeperID: h.nextRequestID(),
 		method:   env.Method,
 		stream:   stream,
+		env:      env,
 	}
 	h.addRoute(r)
 	c.setProxyRoute(env.ID, r)
@@ -276,6 +277,8 @@ type proxyRoute struct {
 	method   string
 	stream   bool
 	internal chan *proto.Envelope
+	env      *proto.Envelope
+	retried  bool
 	once     sync.Once
 }
 
@@ -303,6 +306,9 @@ func (r *proxyRoute) dispatch(env *proto.Envelope) {
 	switch env.Type {
 	case proto.TypeRes:
 		if env.Err != nil {
+			if r.retryDeadSession(env.Err) {
+				return
+			}
 			r.client.fail(r.clientID, env.Err)
 			r.complete()
 			return
@@ -325,6 +331,40 @@ func (r *proxyRoute) dispatch(env *proto.Envelope) {
 			r.complete()
 		}
 	}
+}
+
+// retryDeadSession re-runs an exec once when the keeper answers that its shell
+// is gone. It happens when a command exits the shell: the next command can
+// reach the keeper in the few milliseconds before it finishes shutting down.
+func (r *proxyRoute) retryDeadSession(err *proto.Error) bool {
+	if r.retried || r.internal != nil || r.method != proto.MethodExec {
+		return false
+	}
+	if err.Code != proto.CodeClosed {
+		return false
+	}
+	r.retried = true
+	old := r.handle
+	// Detach the route first: closing the handle fails all of its routes.
+	old.mu.Lock()
+	delete(old.routes, r.keeperID)
+	old.mu.Unlock()
+	old.close()
+	fresh, ferr := old.mgr.ensure(old.name, nil, true)
+	if ferr != nil {
+		return false
+	}
+	r.handle = fresh
+	r.keeperID = fresh.nextRequestID()
+	fresh.addRoute(r)
+	out := *r.env
+	out.ID = r.keeperID
+	if werr := fresh.write(&out); werr != nil {
+		r.complete()
+		r.client.fail(r.clientID, proto.Errorf(proto.CodeClosed, "session %q is not reachable: %v", fresh.name, werr))
+		return true
+	}
+	return true
 }
 
 // failClient reports a failure for a proxied request.
