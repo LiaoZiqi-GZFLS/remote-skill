@@ -1,13 +1,13 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -198,8 +198,10 @@ type GetInfo struct {
 // Get downloads a remote file or directory into local.
 func (c *Client) Get(ctx context.Context, remote, local string, recursive, overwrite bool) (*GetInfo, *transfer.Result, error) {
 	var info GetInfo
-	var result *transfer.Result
-	var buf []byte
+	// Stream the archive straight into the extractor: a multi-GB download must
+	// not be buffered in memory.
+	pr, pw := io.Pipe()
+	ready := make(chan struct{})
 	stream, err := c.Open(ctx, proto.MethodFileGet, map[string]any{
 		"session":   c.SessionName(""),
 		"path":      remote,
@@ -207,7 +209,14 @@ func (c *Client) Get(ctx context.Context, remote, local string, recursive, overw
 	}, func(ev *proto.Envelope) error {
 		switch ev.Chan {
 		case proto.ChOut:
-			buf = append(buf, ev.Data...)
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if _, werr := pw.Write(ev.Data); werr != nil {
+				return werr
+			}
 		case proto.ChError:
 			if msg, _ := ev.Extra["error"].(string); msg != "" {
 				return fmt.Errorf("%s", msg)
@@ -219,24 +228,41 @@ func (c *Client) Get(ctx context.Context, remote, local string, recursive, overw
 		return nil, nil, err
 	}
 	if err := decodeAck(stream, &info); err != nil {
-		return nil, nil, err
-	}
-	if _, err := stream.Wait(ctx); err != nil {
+		close(ready)
+		_ = pw.CloseWithError(err)
 		return nil, nil, err
 	}
 	destDir, rename := localDestination(local, info.Name, info.Dir)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		close(ready)
+		_ = pw.CloseWithError(err)
 		return nil, nil, err
 	}
-	result, err = transfer.Extract(bytes.NewReader(buf), destDir, transfer.ExtractOptions{
-		Overwrite: overwrite,
-		TopRename: rename,
-		Touch:     true,
-	})
-	if err != nil {
-		return &info, result, err
+	close(ready)
+	type extracted struct {
+		res *transfer.Result
+		err error
 	}
-	return &info, result, nil
+	done := make(chan extracted, 1)
+	go func() {
+		res, xerr := transfer.Extract(pr, destDir, transfer.ExtractOptions{
+			Overwrite: overwrite,
+			TopRename: rename,
+			Touch:     true,
+		})
+		done <- extracted{res, xerr}
+	}()
+	streamRes := make(chan error, 1)
+	go func() {
+		_, werr := stream.Wait(ctx)
+		_ = pw.CloseWithError(werr)
+		streamRes <- werr
+	}()
+	out := <-done
+	if werr := <-streamRes; werr != nil && out.err == nil {
+		return &info, out.res, werr
+	}
+	return &info, out.res, out.err
 }
 
 // localDestination mirrors the remote naming rule for downloads.
@@ -310,6 +336,65 @@ func (c *Client) Scrollback(ctx context.Context, session string, tail int) (*Scr
 		return nil, err
 	}
 	return &res, nil
+}
+
+// PortEntry is one listening TCP port on the server.
+type PortEntry struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	Local   bool   `json:"local_only"`
+}
+
+// Ports lists the TCP ports the server is listening on.
+func (c *Client) Ports(ctx context.Context) ([]PortEntry, error) {
+	cmd := "ss -tln 2>/dev/null || netstat -tln 2>/dev/null"
+	if c.Host.RemoteOS == "windows" {
+		cmd = "netstat -ano -p tcp"
+	}
+	var out strings.Builder
+	res, err := c.Exec(ctx, daemon.ExecRequest{Session: c.SessionName(""), Cmd: cmd, TimeoutMS: 30000}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if res.RC != 0 && out.Len() == 0 {
+		return nil, fmt.Errorf("listing ports failed (rc=%d)", res.RC)
+	}
+	seen := map[string]bool{}
+	var ports []PortEntry
+	for _, line := range strings.Split(out.String(), "\n") {
+		upper := strings.ToUpper(line)
+		if !strings.Contains(upper, "LISTEN") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		local := fields[3]
+		i := strings.LastIndex(local, ":")
+		if i < 0 {
+			continue
+		}
+		addr := strings.Trim(local[:i], "[]")
+		portNum, err := strconv.Atoi(local[i+1:])
+		if err != nil || portNum <= 0 {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", addr, portNum)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		localOnly := addr == "127.0.0.1" || addr == "::1" || addr == "localhost"
+		ports = append(ports, PortEntry{Address: addr, Port: portNum, Local: localOnly})
+	}
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].Port != ports[j].Port {
+			return ports[i].Port < ports[j].Port
+		}
+		return ports[i].Address < ports[j].Address
+	})
+	return ports, nil
 }
 
 // Status returns daemon information.

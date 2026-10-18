@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -34,6 +36,9 @@ usage:
   rsk put <host> <local> [remote]        upload a file or directory
   rsk get <host> <remote> [local]        download a file or directory
   rsk ls <host> [path]                   list a remote directory
+  rsk ports <host> [--json]              list listening TCP ports on the server
+  rsk ps <host>                          list background jobs (--detach)
+  rsk kill <host> <job-id>               stop a background job
   rsk logs <host> [flags]                show recent session output
   rsk status <host> [flags]              daemon and session status
   rsk forward <host> <spec>              forward a local port to the server
@@ -74,6 +79,12 @@ func main() {
 		err = cmdGet(args)
 	case "ls", "list":
 		err = cmdLs(args)
+	case "ports":
+		err = cmdPorts(args)
+	case "ps", "jobs":
+		err = cmdPs(args)
+	case "kill":
+		err = cmdKill(args)
 	case "logs", "log":
 		err = cmdLogs(args)
 	case "status":
@@ -536,14 +547,19 @@ func withStdinHeredoc(command string) string {
 }
 
 func runDetached(ctx context.Context, c *client.Client, session, command, cwd string) error {
+	if c.Host.RemoteOS == "windows" {
+		return fmt.Errorf("--detach is not supported on windows remotes yet")
+	}
 	id := jobID()
 	inner := command
 	if cwd != "" {
 		inner = "cd " + client.Quote(cwd) + " && " + inner
 	}
 	script := fmt.Sprintf(
-		"mkdir -p ~/.rsk/jobs && nohup bash -lc %s >~/.rsk/jobs/%s.log 2>&1 </dev/null & echo RSK_PID=$!; echo RSK_LOG=~/.rsk/jobs/%s.log",
-		client.Quote(inner), id, id)
+		"mkdir -p ~/.rsk/jobs && nohup bash -lc %s >~/.rsk/jobs/%s.log 2>&1 </dev/null & __rsk_job=$!; "+
+			"printf 'id=%%s\\npid=%%s\\nlog=%%s\\nstarted=%%s\\n' %s \"$__rsk_job\" %s \"$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)\" >~/.rsk/jobs/%s.meta; "+
+			"echo RSK_PID=$__rsk_job; echo RSK_LOG=~/.rsk/jobs/%s.log",
+		client.Quote(inner), id, client.Quote(id), client.Quote("~/.rsk/jobs/"+id+".log"), id, id)
 	var out strings.Builder
 	res, err := c.Exec(ctx, daemon.ExecRequest{Session: session, Cmd: script, TimeoutMS: 20000}, &out)
 	if err != nil {
@@ -565,6 +581,94 @@ func runDetached(ctx context.Context, c *client.Client, session, command, cwd st
 	fmt.Printf("pid       %s\n", strings.TrimSpace(pid))
 	fmt.Printf("log       %s\n", strings.TrimSpace(logPath))
 	fmt.Printf("follow    rsk exec %s --session %s -- tail -f %s\n", c.Host.Name, session, strings.TrimSpace(logPath))
+	return nil
+}
+
+// cmdPs lists background jobs started with --detach.
+func cmdPs(args []string) error {
+	cf := newCmdFlags("ps")
+	var hf hostFlags
+	hf.bind(cf.fs)
+	pos, err := cf.parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("usage: rsk ps <host>")
+	}
+	ctx, cancel := withSignalContext()
+	defer cancel()
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	c, err := newClient(ctx, cfg, &hf, pos[0], hf.connectOptions())
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if c.Host.RemoteOS == "windows" {
+		return fmt.Errorf("rsk ps is not supported on windows remotes yet")
+	}
+	script := `for f in "$HOME"/.rsk/jobs/*.meta; do [ -f "$f" ] || continue; . "$f"; if kill -0 "$pid" 2>/dev/null; then s=running; else s=exited; fi; printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$pid" "$s" "$started" "$log"; done`
+	var out strings.Builder
+	res, err := c.Exec(ctx, daemon.ExecRequest{Session: c.SessionName(""), Cmd: script, TimeoutMS: 30000}, &out)
+	if err != nil {
+		return err
+	}
+	if res.RC != 0 {
+		return fmt.Errorf("listing jobs failed (rc=%d)", res.RC)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		fmt.Println("no background jobs")
+		return nil
+	}
+	fmt.Printf("%-28s %-8s %-8s %-22s %s\n", "ID", "PID", "STATE", "STARTED", "LOG")
+	for _, line := range lines {
+		f := strings.Split(line, "\t")
+		if len(f) < 5 {
+			continue
+		}
+		fmt.Printf("%-28s %-8s %-8s %-22s %s\n", f[0], f[1], f[2], f[3], f[4])
+	}
+	return nil
+}
+
+// cmdKill stops a background job and its children.
+func cmdKill(args []string) error {
+	cf := newCmdFlags("kill")
+	var hf hostFlags
+	hf.bind(cf.fs)
+	pos, err := cf.parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 2 {
+		return fmt.Errorf("usage: rsk kill <host> <job-id>")
+	}
+	ctx, cancel := withSignalContext()
+	defer cancel()
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	c, err := newClient(ctx, cfg, &hf, pos[0], hf.connectOptions())
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	script := fmt.Sprintf(`f="$HOME/.rsk/jobs/%s.meta"; if [ ! -f "$f" ]; then echo "no such job"; exit 3; fi; . "$f"; kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 1; if kill -0 "$pid" 2>/dev/null; then kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; fi; echo "stopped $id"`,
+		strings.TrimSpace(pos[1]))
+	var out strings.Builder
+	res, err := c.Exec(ctx, daemon.ExecRequest{Session: c.SessionName(""), Cmd: script, TimeoutMS: 30000}, &out)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out.String())
+	if res.RC != 0 {
+		return fmt.Errorf("kill failed (rc=%d)", res.RC)
+	}
 	return nil
 }
 
@@ -748,6 +852,54 @@ func cmdLs(args []string) error {
 	return nil
 }
 
+// cmdPorts lists listening ports so a forward can be picked from real data.
+func cmdPorts(args []string) error {
+	cf := newCmdFlags("ports")
+	var hf hostFlags
+	hf.bind(cf.fs)
+	asJSON := cf.fs.Bool("json", false, "machine readable output")
+	pos, err := cf.parse(args)
+	if err != nil {
+		return err
+	}
+	if len(pos) != 1 {
+		return fmt.Errorf("usage: rsk ports <host> [--json]")
+	}
+	ctx, cancel := withSignalContext()
+	defer cancel()
+	cfg, err := client.LoadConfig()
+	if err != nil {
+		return err
+	}
+	c, err := newClient(ctx, cfg, &hf, pos[0], hf.connectOptions())
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	ports, err := c.Ports(ctx)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(ports)
+	}
+	if len(ports) == 0 {
+		fmt.Println("no listening TCP ports")
+		return nil
+	}
+	fmt.Printf("%-22s %-6s %s\n", "ADDRESS", "PORT", "FORWARD")
+	for _, p := range ports {
+		hint := ""
+		if p.Local {
+			hint = fmt.Sprintf("rsk forward %s %d:localhost:%d", c.Host.Name, p.Port, p.Port)
+		}
+		fmt.Printf("%-22s %-6d %s\n", p.Address, p.Port, hint)
+	}
+	return nil
+}
+
 func cmdLogs(args []string) error {
 	cf := newCmdFlags("logs")
 	var hf hostFlags
@@ -862,6 +1014,7 @@ func cmdForward(args []string) error {
 	bind := cf.fs.String("bind", "127.0.0.1", "local address to listen on")
 	remote := cf.fs.Bool("remote", false, "reverse forward: the server listens, the local side serves (ssh -R)")
 	cf.fs.BoolVar(remote, "R", false, "reverse forward: the server listens, the local side serves (ssh -R)")
+	detach := cf.fs.Bool("detach", false, "run the forward in the background")
 	pos, err := cf.parse(args)
 	if err != nil {
 		return err
@@ -877,23 +1030,85 @@ func cmdForward(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *detach && os.Getenv("RSK_FORWARD_CHILD") == "" {
+		return spawnDetachedForward()
+	}
 	ctx, cancel := withSignalContext()
 	defer cancel()
 	cfg, err := client.LoadConfig()
 	if err != nil {
 		return err
 	}
-	c, err := newClient(ctx, cfg, &hf, pos[0], hf.connectOptions())
+	// Forwarding survives daemon restarts and dropped connections: reconnect
+	// and re-open the listener until the user stops us.
+	for {
+		c, err := newClient(ctx, cfg, &hf, pos[0], hf.connectOptions())
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "rsk: connect failed: %v (retrying)\n", err)
+			if !sleepCtx(ctx, 3*time.Second) {
+				return nil
+			}
+			continue
+		}
+		if spec.Reverse {
+			fmt.Printf("forwarding %s:%d on %s -> local %s (ssh -R)\n", spec.BindHost, spec.BindPort, c.Host.Name, spec.Target())
+			err = client.ReverseForward(ctx, c, spec)
+		} else {
+			fmt.Printf("forwarding %s -> %s (via %s)\n", spec.ListenAddress(), spec.Target(), c.Host.Name)
+			err = client.Forward(ctx, c, spec)
+		}
+		c.Close()
+		if ctx.Err() != nil {
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "rsk: forward dropped: %v (reconnecting)\n", err)
+		if !sleepCtx(ctx, 2*time.Second) {
+			return nil
+		}
+	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// spawnDetachedForward re-runs the same command in the background with a log.
+func spawnDetachedForward() error {
+	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	defer c.Close()
-	if spec.Reverse {
-		fmt.Printf("forwarding %s:%d on %s -> local %s (ssh -R)\n", spec.BindHost, spec.BindPort, c.Host.Name, spec.Target())
-		return client.ReverseForward(ctx, c, spec)
+	dir := client.RuntimeDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
-	fmt.Printf("forwarding %s -> %s (via %s)\n", spec.ListenAddress(), spec.Target(), c.Host.Name)
-	return client.Forward(ctx, c, spec)
+	id := jobID()
+	logPath := filepath.Join(dir, "forward-"+id+".log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Env = append(os.Environ(), "RSK_FORWARD_CHILD=1")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = detachSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	pid := cmd.Process.Pid
+	_ = cmd.Process.Release()
+	fmt.Printf("forward   running in background\npid       %d\nlog       %s\n", pid, logPath)
+	return nil
 }
 
 func cmdDown(args []string) error {
@@ -992,7 +1207,8 @@ if [ -d "$d/run/sessions" ]; then
   done
 fi
 sleep 0.3
-pkill -f 'rskilld session --name' 2>/dev/null || true
+# the bracket keeps pkill from matching this script's own command line
+pkill -f 'rskilld sessio[n] --name' 2>/dev/null || true
 rm -rf "$d"`
 }
 

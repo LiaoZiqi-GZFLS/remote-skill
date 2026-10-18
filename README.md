@@ -35,6 +35,7 @@
 - 双向端口转发：`--remote` 让服务器监听并把连接送回本机（`ssh -R`）
 - 机器重启后仍可恢复上下文：工作目录、已导出环境变量、滚动缓冲、命令历史落盘
 - 远端除 Linux/macOS/FreeBSD 外支持 **Windows**（虚拟会话，见下）
+- 下载流式解包（大文件不占内存）；端口转发会自动重连
 - 为 Agent 设计：`--json` 结构化输出、`--timeout` 兜底、`--detach` 跑服务、
   退出码原样透传
 
@@ -85,9 +86,12 @@ rsk down devbox
 | `rsk sh <host>` | 把会话接到本终端（`Ctrl-]` 断开） |
 | `rsk put/get` | 上传/下载文件或目录（tar 流，保留权限/软链/空目录） |
 | `rsk ls <host> [path]` | 列目录 |
+| `rsk ports <host>` | 列出服务器监听端口，并给出可复制的转发命令 |
+| `rsk ps <host>` / `rsk kill <host> <job-id>` | 列出 / 停止 `--detach` 后台作业 |
 | `rsk logs <host> [--follow]` | 查看/跟随会话终端输出 |
 | `rsk status <host> [--json]` | 守护进程与会话状态 |
 | `rsk forward <host> <spec>` | 本地端口转发到服务器侧目标 |
+| `rsk forward <host> <spec> --detach` | 后台转发；断线或守护进程重启后自动重连 |
 | `rsk forward <host> <spec> --remote` | 反向转发：服务器监听，连回本机服务（`ssh -R`） |
 | `rsk down <host>` | 停止守护进程，**会话继续运行** |
 | `rsk down <host> --kill-sessions` | 连会话一起停止（`--session NAME` 只停一个） |

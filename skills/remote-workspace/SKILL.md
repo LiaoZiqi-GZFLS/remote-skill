@@ -57,6 +57,8 @@ rsk exec devbox -- "cd services/api && go build ./..."
 | Upload | `rsk put <host> <local> [remote] [--recursive]` |
 | Download | `rsk get <host> <remote> [local] [--recursive]` |
 | List a directory | `rsk ls <host> [path] [-l]` |
+| Find listening ports | `rsk ports <host>` |
+| List / stop background jobs | `rsk ps <host>`, `rsk kill <host> <job-id>` |
 | Sessions, daemon, uptime | `rsk status <host> [--json]` |
 | Expose a remote port locally | `rsk forward <host> 8080:localhost:3000` |
 | Let the server reach a local service | `rsk forward <host> 8080:localhost:3000 --remote` |

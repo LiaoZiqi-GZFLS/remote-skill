@@ -97,6 +97,7 @@ rsk forward devbox 8080                     # local 8080 -> remote 8080
 rsk forward devbox 8080:3000                # local 8080 -> remote localhost:3000
 rsk forward devbox 8080:db.internal:5432    # explicit remote host
 rsk forward devbox 0.0.0.0:8080:localhost:3000 --bind 127.0.0.1
+rsk forward devbox 8080:localhost:3000 --detach     # run in the background
 rsk forward devbox 8080:localhost:3000 --remote     # ssh -R: the server listens
 ```
 
@@ -107,6 +108,20 @@ With `--remote` the direction flips: the daemon listens on `<bind>:<port>` on
 the server (default bind 127.0.0.1) and tunnels every accepted connection back
 here, where the target is dialled on the local network. Useful for webhooks or
 to let a remote host reach a service that only exists locally.
+
+Forwards reconnect automatically after a dropped connection or a daemon
+restart. `--detach` prints a pid and a log file.
+
+## rsk ports / rsk ps / rsk kill
+
+```
+rsk ports <host> [--json]      # listening ports with a ready-to-copy forward command
+rsk ps <host>                  # jobs started with `exec --detach`
+rsk kill <host> <job-id>       # terminate a job and its children
+```
+
+`rsk get` streams the archive straight into the extractor, so memory use does
+not grow with the download size.
 
 ## rsk down <host>
 
