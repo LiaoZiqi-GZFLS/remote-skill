@@ -55,6 +55,7 @@ rsk exec devbox -- "cd services/api && go build ./..."
 | Read recent terminal output | `rsk logs <host> --tail 20000` |
 | Follow output live | `rsk logs <host> --follow` |
 | Upload | `rsk put <host> <local> [remote] [--recursive]` |
+| Incremental sync | `rsk sync <host> <local> <remote> [--exclude PAT] [--delete] [--dry-run]` |
 | Download | `rsk get <host> <remote> [local] [--recursive]` |
 | List a directory | `rsk ls <host> [path] [-l]` |
 | Find listening ports | `rsk ports <host>` |

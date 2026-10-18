@@ -259,9 +259,6 @@ func (s *Server) shutdownWith(force, killSessions bool) {
 		for _, c := range conns {
 			c.close()
 		}
-		if s.opts.SocketPath != "" {
-			os.Remove(s.opts.SocketPath)
-		}
 		close(s.shutdownDone)
 	})
 }
@@ -841,6 +838,7 @@ func (c *conn) handleFileManifest(env *proto.Envelope) {
 		c.fail(env.ID, asProto(err))
 		return
 	}
+	c.srv.log.Printf("manifest %s", root)
 	entries := make([]ManifestEntry, 0, 256)
 	count := 0
 	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -926,6 +924,7 @@ func (c *conn) handleFilePut(req *request, env *proto.Envelope) {
 		c.fail(env.ID, asProto(err))
 		return
 	}
+	c.srv.log.Printf("file.put %s -> %s (rename %q)", p.Path, destDir, rename)
 
 	pr, pw := io.Pipe()
 	type extractOut struct {
@@ -939,6 +938,10 @@ func (c *conn) handleFilePut(req *request, env *proto.Envelope) {
 			Touch:     p.Touch,
 			TopRename: rename,
 		})
+		// Unblock the writer: if extraction failed early, later chunks would
+		// otherwise block forever on a pipe with no reader.
+		_ = pr.CloseWithError(err)
+		c.srv.log.Printf("file.put extract done: %v %v", res, err)
 		outCh <- extractOut{res, err}
 	}()
 
@@ -957,6 +960,7 @@ loop:
 					break loop
 				}
 			case proto.ChEof:
+				c.srv.log.Printf("file.put eof received")
 				break loop
 			case proto.ChError:
 				writeErr = fmt.Errorf("client aborted upload")

@@ -96,6 +96,7 @@ func (c *Client) PutStream(ctx context.Context, remote string, recursive, overwr
 	if err := c.conn.Write(req); err != nil {
 		return nil, err
 	}
+	c.logf("put: request sent")
 	pr, pw := io.Pipe()
 	produceErr := make(chan error, 1)
 	go func() {
@@ -103,6 +104,7 @@ func (c *Client) PutStream(ctx context.Context, remote string, recursive, overwr
 		_ = pw.CloseWithError(err)
 		produceErr <- err
 	}()
+	c.logf("put: producer started")
 	buf := make([]byte, 256<<10)
 	sendErr := error(nil)
 	for {
@@ -122,6 +124,7 @@ func (c *Client) PutStream(ctx context.Context, remote string, recursive, overwr
 		}
 		n, err := pr.Read(buf)
 		if n > 0 {
+			c.logf("put: chunk %d bytes", n)
 			if werr := c.conn.Write(proto.NewEvent(id, proto.ChIn, buf[:n])); werr != nil {
 				sendErr = werr
 				break
@@ -138,6 +141,7 @@ func (c *Client) PutStream(ctx context.Context, remote string, recursive, overwr
 		_ = c.conn.Write(proto.NewEvent(id, proto.ChError, nil))
 		return nil, err
 	}
+	c.logf("put: producer done, sending eof")
 	if err := c.conn.Write(proto.NewEvent(id, proto.ChEof, nil)); err != nil {
 		return nil, err
 	}

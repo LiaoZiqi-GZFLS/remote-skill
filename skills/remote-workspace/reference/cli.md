@@ -77,6 +77,17 @@ Remote paths are resolved relative to the session working directory; `~` and
 absolute paths work too. Transfers stream a tar archive: permissions,
 symlinks, empty directories and mtimes survive.
 
+## rsk sync
+
+```
+rsk sync <host> <local-dir> <remote-dir> [--exclude GLOB]... [--delete] [--dry-run] [--json]
+```
+
+Incremental one-way sync: the server returns a manifest (size + mtime), only
+changed files are packed into a single streamed tar, and `--delete` removes
+remote files that no longer exist locally. Repeating a sync is a no-op;
+`--dry-run` reports what would change without touching the server.
+
 ## rsk logs <host>
 
 ```

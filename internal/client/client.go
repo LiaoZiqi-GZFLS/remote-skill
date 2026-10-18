@@ -473,6 +473,12 @@ func (c *Client) waitDone(e *reqEntry) error {
 
 // Call performs a request/response exchange without streaming.
 func (c *Client) Call(ctx context.Context, method string, params any, result any) error {
+	// Never let a wedged daemon hang a short request forever.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+	}
 	env, err := c.StreamWait(ctx, method, params, nil)
 	if err != nil {
 		return err

@@ -39,6 +39,7 @@ usage:
   rsk get <host> <remote> [local]        download a file or directory
   rsk ls <host> [path]                   list a remote directory
   rsk ports <host> [--json]              list listening TCP ports on the server
+  rsk sync <host> <local> <remote>       incremental upload (--exclude, --delete, --dry-run)
   rsk ps <host>                          list background jobs (--detach)
   rsk kill <host> <job-id>               stop a background job
   rsk logs <host> [flags]                show recent session output
@@ -83,6 +84,8 @@ func main() {
 		err = cmdLs(args)
 	case "ports":
 		err = cmdPorts(args)
+	case "sync":
+		err = cmdSync(args)
 	case "ps", "jobs":
 		err = cmdPs(args)
 	case "kill":

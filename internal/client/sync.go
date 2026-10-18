@@ -72,10 +72,25 @@ func (c *Client) Sync(ctx context.Context, local, remote string, opts SyncOption
 			return nil, err
 		}
 	}
+	// The root must be a directory: a stale file at that path would make every
+	// future upload fail with a confusing rename.
+	var mkOut strings.Builder
+	mkRes, mkErr := c.Exec(ctx, daemon.ExecRequest{
+		Session:   c.SessionName(""),
+		Cmd:       "mkdir -p " + Quote(remote),
+		TimeoutMS: 30000,
+	}, &mkOut)
+	if mkErr != nil {
+		return nil, mkErr
+	}
+	if mkRes.RC != 0 {
+		return nil, fmt.Errorf("remote %s is not a directory: %s", remote, strings.TrimSpace(mkOut.String()))
+	}
 	remoteByPath := make(map[string]remoteEntry, len(entries))
 	for _, e := range entries {
 		remoteByPath[e.Path] = e
 	}
+	c.logf("sync: remote has %d entries", len(entries))
 
 	res := &SyncResult{}
 	seen := map[string]bool{}
@@ -123,6 +138,7 @@ func (c *Client) Sync(ctx context.Context, local, remote string, opts SyncOption
 	if err != nil {
 		return nil, err
 	}
+	c.logf("sync: added=%d changed=%d unchanged=%d", res.Added, res.Changed, res.Unchanged)
 
 	if opts.Delete {
 		for rel, e := range remoteByPath {
@@ -138,6 +154,7 @@ func (c *Client) Sync(ctx context.Context, local, remote string, opts SyncOption
 	}
 
 	if len(changedPaths) > 0 {
+		c.logf("sync: uploading %d changed file(s)", len(changedPaths))
 		if _, err := c.PutStream(ctx, remote, true, true, func(w io.Writer) error {
 			_, aerr := transfer.Archive(w, changedPaths, transfer.ArchiveOptions{
 				Recursive: true,
@@ -147,8 +164,10 @@ func (c *Client) Sync(ctx context.Context, local, remote string, opts SyncOption
 		}); err != nil {
 			return res, fmt.Errorf("upload changed files: %w", err)
 		}
+		c.logf("sync: upload finished")
 	}
 	if len(res.Removed) > 0 {
+		c.logf("sync: deleting %d remote file(s)", len(res.Removed))
 		if err := c.Call(ctx, proto.MethodFileRemove, map[string]any{
 			"session": c.SessionName(""),
 			"root":    remote,

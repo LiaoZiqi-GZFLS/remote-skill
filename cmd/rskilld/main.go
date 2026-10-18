@@ -151,6 +151,17 @@ func serve(socket, logPath, sessionsDir string, idle time.Duration, shell string
 	}
 	defer l.Close()
 	_ = os.Chmod(socket, 0o600)
+	socketStamp := time.Time{}
+	if st, serr := os.Stat(socket); serr == nil {
+		socketStamp = st.ModTime()
+	}
+	defer func() {
+		// Only remove the socket if it is still ours: a successor daemon may
+		// already have taken over the same path.
+		if st, serr := os.Stat(socket); serr == nil && st.ModTime().Equal(socketStamp) {
+			_ = os.Remove(socket)
+		}
+	}()
 	writePidFile(socket)
 
 	opts := daemon.Options{
