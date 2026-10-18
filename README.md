@@ -106,8 +106,9 @@ rsk down devbox
 `--broker` 会复用一个本地常驻 SSH 连接：实测命令从 ~1.9s 降到 ~0.13s。
 目前为实验特性（守护进程/会话反复重启时仍有边缘竞态），默认关闭；
 需要时用 `rsk exec <host> --broker -- <cmd>` 或设置 `RSK_BROKER=1`。
-其中会话级开关（`--session`/`--env`/`--shell`/`--inline`）只作用于本次调用，
-只有 `rsk up` 会把它们写进主机配置作为默认值。
+其中 `--session` 只选择本次调用的会话；`--cwd`/`--env` 会改动持久 shell，
+因此会延续到后续命令；`--shell`/`--no-profile` 只影响新建会话，`--inline`
+只在启动守护进程时生效。只有 `rsk up` 会把它们写进主机配置作为默认值。
 完整说明见 [skills/remote-workspace/reference/cli.md](skills/remote-workspace/reference/cli.md)。
 
 ## 接入 Agent Skill

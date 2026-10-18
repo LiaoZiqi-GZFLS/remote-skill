@@ -10,7 +10,7 @@ Accepted by every host command:
 --port N           ssh port
 --identity FILE    ssh private key
 --ssh-arg ARG      extra ssh option, repeatable
---env K=V          session environment, repeatable
+--env K=V          session environment, repeatable; exported into the session
 --shell PATH       shell for new sessions (default /bin/bash)
 --no-profile       start sessions without user rc files
 --verbose, -v      trace ssh and protocol activity
@@ -26,7 +26,7 @@ cached build still matches.
 ```
 --workspace DIR    cd into DIR and remember it for the session
 --name ALIAS       store the host under ALIAS
---restart          restart the remote daemon (kills its sessions)
+--restart          restart the remote daemon (keeper sessions survive)
 --force            re-upload the daemon binary
 ```
 
@@ -39,7 +39,7 @@ code. `--` is optional but recommended so command flags are not parsed locally.
 --timeout DUR      interrupt after DUR (default 120s, 0 disables)
 --wait DUR         wait up to DUR for a busy session (default 30s, 0 fails fast)
 --cwd DIR          cd for this command (persists in the session)
---env K=V          export for this command (persists in the session)
+--env K=V          export before this command and persist in the session
 --json             print {rc, session, exec_id, cwd, duration_ms, timed_out, stdout}
 --detach           start in the background, print job id, pid and log path
 --stdin            feed local stdin to the command through a heredoc
@@ -55,7 +55,8 @@ never killed by a timeout.
 ## rsk sh <host>
 
 Attaches the session to your terminal (needs a TTY). `Ctrl-]` detaches,
-`Ctrl-C` interrupts the foreground job, window resizes are forwarded.
+`Ctrl-C` interrupts the foreground job, window resizes are forwarded. Unix
+remotes provide this pty-backed attach; Windows remotes do not support `rsk sh`.
 
 ```
 --replay BYTES     scrollback to replay first (default 64KiB)
@@ -130,8 +131,8 @@ restart. `--detach` prints a pid and a log file.
 
 ```
 rsk ports <host> [--json]      # listening ports with a ready-to-copy forward command
-rsk ps <host>                  # jobs started with `exec --detach`
-rsk kill <host> <job-id>       # terminate a job and its children
+rsk ps <host>                  # jobs started with `exec --detach` (not Windows)
+rsk kill <host> <job-id>       # terminate a job and its children (not Windows)
 ```
 
 `rsk get` streams the archive straight into the extractor, so memory use does
@@ -175,8 +176,8 @@ keeper killed) keeps its snapshot and is recreated with the same variables.
 ## rsk up <host> --inline
 
 Keeps sessions inside the daemon again (they end when it stops). Useful on hosts
-where detached processes are restricted; `rsk up <host>` switches back to
-per-session keepers.
+where detached processes are restricted. To switch back to per-session keepers,
+run `rsk up <host> --restart` without `--inline`.
 
 ## rsk hosts / rsk doctor / rsk version
 
@@ -192,8 +193,9 @@ rsk logout <host>                     # forget it
 ```
 
 Password-only hosts (no keys, no sudo) work through PuTTY's `plink`/`pscp`
-(must be installed): `rsk` selects plink automatically once a password is
-stored. `--password-stdin` reads the password from stdin for scripted setup;
-otherwise it is prompted with echo off. `--ask-pass` lets the system ssh prompt
-on a terminal instead (never used automatically, so agents never hang on a
-hidden prompt). `--ssh-impl ssh|plink` forces a transport.
+(must be installed) on Windows clients: `rsk` selects plink automatically once
+a password is stored. Saved passwords are currently Windows-only.
+`--password-stdin` reads the password from stdin for scripted setup; otherwise
+it is prompted with echo off. `--ask-pass` lets the system ssh prompt on a
+terminal instead (never used automatically, so agents never hang on a hidden
+prompt). `--ssh-impl ssh|plink` forces a transport.
