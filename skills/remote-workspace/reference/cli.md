@@ -52,6 +52,70 @@ to die, the daemon escalates to SIGTERM then SIGKILL, and reports
 `unfinished: true` if the process still holds the terminal. The shell itself is
 never killed by a timeout.
 
+## rsk read <host> <path>
+
+Reads a bounded UTF-8 text window directly through the file RPC. It does not
+use the session PTY, so content is not added to shell scrollback.
+
+```
+--offset N         1-based first line (default 1)
+--limit N          maximum lines (default 2000, 0 means no line limit)
+--max-bytes N      maximum content bytes (default 1 MiB, maximum 8 MiB)
+--metadata-only    return type, size, mode, mtime and binary detection only
+--json             return path, metadata, content, next_offset and flags
+```
+
+`truncated` means more content exists; continue from `next_offset`. Binary files
+are rejected unless `--metadata-only` is used; download them with `get`.
+
+## rsk write <host> <path> --stdin
+
+```
+--stdin            required: read content from local stdin
+--overwrite        replace an existing regular file
+--create-parents   create missing parent directories
+```
+
+Content is streamed directly to the daemon, written to a temporary file in the
+target directory and committed with an atomic rename. Existing files are
+preserved unless `--overwrite` is explicit. Symlinks and directories are
+rejected; edit the symlink target explicitly.
+
+## rsk patch <host> --stdin
+
+Reads a JSON patch document from stdin:
+
+```json
+{
+  "operations": [
+    {
+      "op": "replace",
+      "path": "src/main.go",
+      "old": "old exact text",
+      "new": "new exact text",
+      "count": 1
+    },
+    {
+      "op": "add",
+      "path": "docs/new.md",
+      "content": "# New\n",
+      "mode": "0644",
+      "create_parents": true
+    },
+    {
+      "op": "delete",
+      "path": "docs/old.md"
+    }
+  ]
+}
+```
+
+A top-level array of operations is also accepted. `count` defaults to 1 and
+must equal the number of exact literal matches. All paths and matches are
+validated before staging. Files are staged in their target directories, then
+committed with backups and rollback, so a mismatch or commit error does not
+leave partially modified files. Use `--json` for structured change output.
+
 ## rsk sh <host>
 
 Attaches the session to your terminal (needs a TTY). `Ctrl-]` detaches,
@@ -79,6 +143,14 @@ Naming rules, identical in both directions:
 Remote paths are resolved relative to the session working directory; `~` and
 absolute paths work too. Transfers stream a tar archive: permissions,
 symlinks, empty directories and mtimes survive.
+
+## rsk ls <host> [path]
+
+```
+--long, -l         include size and mtime
+--json             return {path, count, entries}; entries include type,
+                   symlink, size, octal mode, mode string and mtime
+```
 
 ## rsk sync
 

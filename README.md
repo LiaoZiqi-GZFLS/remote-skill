@@ -32,6 +32,7 @@
   留在滚动缓冲里，随时 `rsk logs` 取回
 - 每次调用只付一次轻量 SSH 握手，而不是重新登录、重新配环境
 - 传文件、端口转发、后台任务、超时中断都是一等公民
+- 远程文件原语：有界读取、原子写入、精确 patch 和 JSON 目录列表
 - 双向端口转发：`--remote` 让服务器监听并把连接送回本机（`ssh -R`）
 - 机器重启后仍可恢复上下文：工作目录、已导出环境变量、滚动缓冲、命令历史落盘
 - 远端除 Linux/macOS/FreeBSD 外支持 **Windows**（虚拟会话，见下）
@@ -68,6 +69,7 @@ rsk doctor devbox                             # 出问题时逐段诊断
 ```bash
 rsk exec devbox -- npm test
 rsk exec devbox -- "cd services/api && go build ./..."
+rsk read devbox src/main.go --offset 1 --limit 200
 rsk exec devbox --detach -- "npm run dev -- --port 3000"
 rsk forward devbox 3000:127.0.0.1:3000
 rsk put devbox ./src /home/me/project/src --recursive
@@ -84,10 +86,13 @@ rsk down devbox
 | `rsk up <host>` | 引导主机、启动守护进程、开会话（`--workspace` 设工作目录） |
 | `rsk exec <host> [--] <cmd>` | 在持久会话里执行命令，退出码透传 |
 | `rsk sh <host>` | 把会话接到本终端（`Ctrl-]` 断开） |
+| `rsk read <host> <path>` | 有界读取远端文本（`--offset/--limit/--max-bytes/--json`） |
+| `rsk write <host> <path> --stdin` | 原子写入远端文件；默认不覆盖 |
+| `rsk patch <host> --stdin` | 校验并原子应用 JSON patch |
 | `rsk put/get` | 上传/下载文件或目录（tar 流，保留权限/软链/空目录） |
 | `rsk sync <host> <local> <remote>` | 增量同步（按大小+mtime 比对，`--exclude/--delete/--dry-run`） |
 | `rsk fanout [--all\|--hosts a,b] -- <cmd>` | 多主机并行执行，按主机汇总输出与退出码 |
-| `rsk ls <host> [path]` | 列目录 |
+| `rsk ls <host> [path] [--json]` | 列目录，可输出结构化 JSON |
 | `rsk ports <host>` | 列出服务器监听端口，并给出可复制的转发命令 |
 | `rsk ps <host>` / `rsk kill <host> <job-id>` | 列出 / 停止 `--detach` 后台作业 |
 | `rsk logs <host> [--follow]` | 查看/跟随会话终端输出 |
@@ -110,6 +115,62 @@ rsk down devbox
 因此会延续到后续命令；`--shell`/`--no-profile` 只影响新建会话，`--inline`
 只在启动守护进程时生效。只有 `rsk up` 会把它们写进主机配置作为默认值。
 完整说明见 [skills/remote-workspace/reference/cli.md](skills/remote-workspace/reference/cli.md)。
+
+## 远程文件原语
+
+这些命令直接走远端文件 RPC，不经过 PTY，因此不会把文件内容写进会话滚动记录：
+
+```bash
+# 读取：默认最多 2000 行 / 1 MiB，行号从 1 开始
+rsk read devbox src/main.go --offset 120 --limit 80 --json
+rsk read devbox package.json --metadata-only --json
+
+# 写入：内容只从 stdin 读取；覆盖必须显式指定
+rsk write devbox scripts/task.sh --stdin --create-parents <<'EOF'
+#!/bin/sh
+echo task
+EOF
+
+# 已有文件
+rsk write devbox config.txt --stdin --overwrite < config.txt
+
+# 结构化目录信息
+rsk ls devbox src --json
+```
+
+`rsk patch` 从 stdin 接收 JSON；所有替换先完成匹配校验，再统一写入：
+
+```json
+{
+  "operations": [
+    {
+      "op": "replace",
+      "path": "src/main.go",
+      "old": "oldContext",
+      "new": "newContext",
+      "count": 1
+    },
+    {
+      "op": "add",
+      "path": "docs/new.md",
+      "content": "# New\n",
+      "mode": "0644",
+      "create_parents": true
+    },
+    {
+      "op": "delete",
+      "path": "docs/old.md"
+    }
+  ]
+}
+```
+
+```bash
+rsk patch devbox --stdin --json < patch.json
+```
+
+`replace.count` 必须与实际精确字符串匹配次数一致，否则整份 patch 失败。读取二进制文件
+继续使用 `rsk get`；大目录和批量资产继续使用 `put/get/sync`。
 
 ## 接入 Agent Skill
 
@@ -195,7 +256,7 @@ go build -o dist/rsk ./cmd/rsk
 pwsh test/e2e.ps1 -Target <ip> -User <user> -Key <path-to-key>
 ```
 
-E2E 覆盖：引导上传、会话持久（cwd/env）、退出码（含 `exit` 掉 shell 后自愈）、
+E2E 覆盖：引导上传、会话持久（cwd/env）、远程 read/write/patch、退出码（含 `exit` 掉 shell 后自愈）、
 超时中断与会话自愈、语法错误、多会话、递归上传下载（两种命名规则）、单文件改名、
 ls、后台任务日志、滚动日志、相对路径工作区、端口转发，以及**守护进程重启 / `down`
 不断会话 / 守护进程被 `kill -9` 时正在跑的命令仍在运行 / `--kill-sessions` 真正停止会话**。

@@ -46,6 +46,16 @@ function Invoke-Rsk {
     return @{ Output = $output; Code = $code }
 }
 
+function Invoke-RskInput {
+    param([string]$InputText, [string[]]$Arguments, [switch]$AllowFailure)
+    $output = $InputText | & $Rsk @Arguments 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    if (-not $AllowFailure -and $code -ne 0) {
+        throw "rsk $($Arguments -join ' ') failed (exit $code):`n$output"
+    }
+    return @{ Output = $output; Code = $code }
+}
+
 function Check {
     param([string]$Name, [scriptblock]$Body)
     try {
@@ -185,6 +195,51 @@ Check "single file put to an explicit path" {
     Assert-True ($r.Output -match "single file body") "content: $($r.Output)"
 }
 
+Check "read, write, patch and JSON listing primitives" {
+    $remote = "$($script:workspace)/agent-files"
+    $file = "$remote/sample.txt"
+    # PowerShell appends one newline to native stdin; omit one here so the
+    # resulting remote file has the intended trailing newline.
+    $created = Invoke-RskInput "one`ntwo`nthree" (@("write", $Target, $file, "--stdin", "--create-parents") + $sshArgs)
+    Assert-True ($created.Output -match "created") "write output: $($created.Output)"
+
+    $r = Invoke-Rsk (@("read", $Target, $file, "--offset", "2", "--limit", "2", "--json") + $sshArgs)
+    $json = $r.Output | ConvertFrom-Json
+    $content = $json.content -replace "`r`n", "`n"
+    Assert-True ($content -eq "two`nthree`n") "read content: $($json.content)"
+    Assert-True ($json.eof -and -not $json.truncated -and $json.next_offset -eq 4) "read metadata: $($r.Output)"
+
+    $patch = @{
+        operations = @(
+            @{ op = "replace"; path = $file; old = "two"; new = "TWO"; count = 1 },
+            @{ op = "add"; path = "$remote/nested/new.txt"; content = "new`n"; mode = "0600"; create_parents = $true }
+        )
+    } | ConvertTo-Json -Depth 6
+    $r = Invoke-RskInput $patch (@("patch", $Target, "--stdin", "--json") + $sshArgs)
+    $json = $r.Output | ConvertFrom-Json
+    Assert-True ($json.changes.Count -eq 2) "patch output: $($r.Output)"
+
+    $r = Invoke-Rsk (@("read", $Target, $file, "--json") + $sshArgs)
+    $json = $r.Output | ConvertFrom-Json
+    $content = $json.content -replace "`r`n", "`n"
+    Assert-True ($content -eq "one`nTWO`nthree`n") "patched content: $($r.Output)"
+    $r = Invoke-Rsk (@("ls", $Target, $remote, "--json") + $sshArgs)
+    $json = $r.Output | ConvertFrom-Json
+    Assert-True ($json.count -eq 2 -and (($json.entries | ForEach-Object { $_.name }) -contains "nested")) "ls JSON: $($r.Output)"
+
+    $bad = "$remote/should-not-exist.txt"
+    $badPatch = @{
+        operations = @(
+            @{ op = "add"; path = $bad; content = "bad" },
+            @{ op = "replace"; path = $file; old = "missing"; new = "x"; count = 1 }
+        )
+    } | ConvertTo-Json -Depth 5
+    $r = Invoke-RskInput $badPatch (@("patch", $Target, "--stdin") + $sshArgs) -AllowFailure
+    Assert-True ($r.Code -ne 0) "mismatched patch should fail: $($r.Output)"
+    $r = Invoke-Rsk (@("read", $Target, $bad) + $sshArgs) -AllowFailure
+    Assert-True ($r.Code -ne 0) "patch left a partial file: $($r.Output)"
+}
+
 Check "ls lists the remote directory" {
     $r = Invoke-Rsk (@("ls", $Target, $script:workspace, "--long") + $sshArgs)
     Assert-True ($r.Output -match "uploaded/") "ls output: $($r.Output)"
@@ -311,6 +366,8 @@ Check "session state is restored after a machine restart" {
     Invoke-Rsk (@("exec", $Target, "--session", "reboot") + $sshArgs + @(
         "--", "cd /var && export RSK_REBOOT=yes && echo marker-before-reboot"
     )) | Out-Null
+    # The keeper throttles state snapshots; give the 5s saver time to flush.
+    Start-Sleep -Seconds 6
     Invoke-Rsk (@("exec", $Target, "--session", "reboot") + $sshArgs + @(
         "--", "pkill -9 -f 'rskilld.*session --name reboot'; kill -9 `$(cat ~/.rsk/run/rskd.sock.pid)"
     )) -AllowFailure | Out-Null

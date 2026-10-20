@@ -80,13 +80,16 @@ rsk login devbox --password-stdin < secret.txt   # scripted setup
 | Run a command in the session | `rsk exec <host> [flags] -- <cmd>` |
 | Interactive single command (sudo/top) | `rsk exec <host> --tty -- <cmd>` |
 | Attach to the session in a terminal | `rsk sh <host>` (unix remotes) |
+| Read a bounded text window | `rsk read <host> <path> [--offset N] [--limit N] [--json]` |
+| Atomically write from stdin | `rsk write <host> <path> --stdin [--overwrite]` |
+| Apply exact replacements/add/delete | `rsk patch <host> --stdin --json` |
 | Run in the background, keep a log | `rsk exec <host> --detach -- <cmd>` |
 | Read recent terminal output | `rsk logs <host> --tail 20000` |
 | Follow output live | `rsk logs <host> --follow` |
 | Upload | `rsk put <host> <local> [remote] [--recursive]` |
 | Download | `rsk get <host> <remote> [local] [--recursive]` |
 | Incremental one-way sync | `rsk sync <host> <local> <remote> [--exclude PAT] [--delete] [--dry-run]` |
-| List a directory | `rsk ls <host> [path] [-l]` |
+| List a directory | `rsk ls <host> [path] [-l] [--json]` |
 | Find listening ports | `rsk ports <host>` |
 | List / stop background jobs | `rsk ps <host>`, `rsk kill <host> <job-id>` |
 | Run on many hosts | `rsk fanout --hosts a,b -- <cmd>` (or `--all`) |
@@ -115,38 +118,45 @@ rsk login devbox --password-stdin < secret.txt   # scripted setup
 4. **Use `--json` when you need to parse.** It returns
    `{rc, session, exec_id, cwd, duration_ms, timed_out, stdout}` and still
    exits with the remote exit code.
-5. **Quote carefully.** `rsk exec devbox -- "cd app && make"` sends the string
+5. **Use file primitives for text.** Read with `rsk read`, not `exec -- cat`;
+   reads are directly bounded and do not enter the session scrollback. Use
+   `rsk get` for binary files.
+6. **Edit exactly.** `rsk write --stdin` is for complete content and refuses to
+   overwrite unless `--overwrite` is passed. Use `rsk patch --stdin` for exact
+   replace/add/delete operations; every match is validated before any file is
+   committed.
+7. **Quote carefully.** `rsk exec devbox -- "cd app && make"` sends the string
    to the remote shell; avoid double-expanding local `$VAR` unless intended.
-6. **Never put secrets in commands.** Command text, output and environment are
+8. **Never put secrets in commands.** Command text, output and environment are
    persisted in the session state (`~/.rsk/state`, shell history, scrollback).
    Prefer an uploaded file or an interactive credential prompt; `--env` values
    are exported into the session and can also be snapshotted.
-7. **Prefer `sync` for trees, `put` for one-off files.** `sync` compares
+9. **Prefer `sync` for trees, `put` for one-off files.** `sync` compares
    size+mtime on the server, uploads only changes, and is idempotent;
    `--delete` mirrors deletions, `--dry-run` previews.
-8. **Interrupting is safe.** Ctrl-C (or a timeout) interrupts the foreground
+10. **Interrupting is safe.** Ctrl-C (or a timeout) interrupts the foreground
    job only; the session and its environment stay alive. Use `--tty` for tools
    that need a real terminal (sudo password prompts, top, editors).
-9. **Do not restart sessions to fix a daemon.** If the daemon dies (crash,
+11. **Do not restart sessions to fix a daemon.** If the daemon dies (crash,
    upgrade, `rsk down`), just run the next command: the same shell, cwd and
    running jobs are still there. Only explicit `--session NAME`,
    `--kill-sessions` or `--purge` ends sessions, and those forget the saved
    environment too.
-10. **Check before assuming.** `rsk status <host> --json` shows sessions, cwd,
+12. **Check before assuming.** `rsk status <host> --json` shows sessions, cwd,
     busy state and the last command's exit code.
-11. **Know which flags stick.** `--session` selects the session for this call;
+13. **Know which flags stick.** `--session` selects the session for this call;
     `--cwd` and `--env` change that persistent shell and therefore carry into
     later commands. `--shell` and `--no-profile` shape new sessions, while
     `--inline` takes effect when a daemon starts. Only `rsk up` stores them as
     host defaults.
-12. **Password-only hosts**: never ask the user to paste a password into chat.
+14. **Password-only hosts**: never ask the user to paste a password into chat.
     Run `rsk login <host>` yourself if a terminal is available, or tell the user
     to run it once. After that plink is used automatically; without a stored
     password the client fails fast with a hint instead of prompting.
-13. **Windows remotes**: `exec`, transfers, logs, sync and forwarding work;
-    each plain command starts one PowerShell process (pass `--no-profile` for
-    speed). `rsk sh`, `exec --detach`, `ps` and `kill` are not supported yet,
-    but `rsk exec --tty` works through ConPTY.
+15. **Windows remotes**: `exec`, file primitives, transfers, logs, sync and
+    forwarding work; each plain command starts one PowerShell process (pass
+    `--no-profile` for speed). `rsk sh`, `exec --detach`, `ps` and `kill` are
+    not supported yet, but `rsk exec --tty` works through ConPTY.
 
 ## Recipes
 
@@ -154,6 +164,15 @@ Build and test a checkout that lives on the server:
 
 ```bash
 rsk exec devbox -- "cd ~/project && git pull --ff-only && make test"
+```
+
+Inspect and patch a remote source file without transferring the whole file:
+
+```bash
+rsk read devbox src/config.go --offset 80 --limit 60 --json
+cat <<'JSON' | rsk patch devbox --stdin
+{"operations":[{"op":"replace","path":"src/config.go","old":"oldValue","new":"newValue","count":1}]}
+JSON
 ```
 
 Sync local edits, build, fetch the artifact back:
@@ -208,6 +227,9 @@ rsk logs devbox --tail 8000                 # what the session itself printed
 | `session is busy` | something is still running: `rsk status <host>`, `rsk logs <host>`, or use another session |
 | `timed_out: true` | the command exceeded `--timeout`; raise it or use `--detach` |
 | `unfinished: true` | the command ignored SIGINT/TERM/KILL; inspect from another session with `rsk exec <host> --session diag -- ps -ef` |
+| `read` reports `truncated: true` | continue from `next_offset`, raise `--limit`/`--max-bytes`, or download with `get` |
+| `write` refuses to replace | pass `--overwrite` only after confirming the target |
+| `patch` matched the wrong number of times | make `old` more specific; validation leaves files unchanged |
 | `daemon is running a different build` | automatic: the client restarts it, or run `rsk up <host> --restart` |
 | output looks truncated | increase `--tail`, or read files directly with `rsk exec <host> -- cat <file>` |
 | sync keeps re-uploading | compare clocks/mtimes, or use `rsk put` for that tree |

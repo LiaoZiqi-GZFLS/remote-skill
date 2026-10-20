@@ -637,6 +637,12 @@ func (c *conn) handleRequest(env *proto.Envelope) {
 			c.handleFilePut(req, env)
 		case proto.MethodFileGet:
 			c.handleFileGet(req, env)
+		case proto.MethodFileRead:
+			c.handleFileRead(env)
+		case proto.MethodFileWrite:
+			c.handleFileWrite(req, env)
+		case proto.MethodFilePatch:
+			c.handleFilePatch(req, env)
 		case proto.MethodFileList:
 			c.handleFileList(env)
 		case proto.MethodFileManifest:

@@ -36,9 +36,12 @@ usage:
   rsk up <host> [flags]                  bootstrap a host and open a session
   rsk exec <host> [flags] [--] <cmd...>  run a command inside the session
   rsk sh <host> [flags]                  attach the session to this terminal
+  rsk read <host> <path> [flags]         read a bounded text window
+  rsk write <host> <path> --stdin        atomically write a remote file
+  rsk patch <host> --stdin               apply a JSON patch document
   rsk put <host> <local> [remote]        upload a file or directory
   rsk get <host> <remote> [local]        download a file or directory
-  rsk ls <host> [path]                   list a remote directory
+  rsk ls <host> [path] [--json]          list a remote directory
   rsk ports <host> [--json]              list listening TCP ports on the server
   rsk sync <host> <local> <remote>       incremental upload (--exclude, --delete, --dry-run)
   rsk fanout [--all | --hosts a,b] -- <cmd>   run a command on several hosts in parallel
@@ -78,6 +81,12 @@ func main() {
 		err = cmdExec(args)
 	case "sh", "attach":
 		err = cmdSh(args)
+	case "read":
+		err = cmdRead(args)
+	case "write":
+		err = cmdWrite(args)
+	case "patch":
+		err = cmdPatch(args)
 	case "put", "upload":
 		err = cmdPut(args)
 	case "get", "download":
@@ -846,6 +855,7 @@ func cmdLs(args []string) error {
 	hf.bind(cf.fs)
 	long := cf.fs.Bool("long", false, "long listing")
 	cf.fs.BoolVar(long, "l", false, "long listing")
+	asJSON := cf.fs.Bool("json", false, "machine readable output")
 	pos, err := cf.parse(args)
 	if err != nil {
 		return err
@@ -871,6 +881,16 @@ func cmdLs(args []string) error {
 	entries, dir, err := c.List(ctx, remote)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		payload := map[string]any{
+			"path":    dir,
+			"count":   len(entries),
+			"entries": entries,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
 	}
 	fmt.Printf("%s\n", dir)
 	for _, e := range entries {
